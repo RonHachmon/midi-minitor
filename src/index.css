@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens taken from the reference screenshots.
+ *
+ * These live in one place because the screenshots are this project's design
+ * authority: a value that appears inline in six components gets nudged six
+ * times until the window no longer matches the image. Named here, each one is
+ * checked against the reference once.
+ *
+ * The palette is the macOS system light appearance the reference was captured
+ * in — a warm off-white chrome above a pure-white list, with hairline dividers.
+ */
+@theme {
+  --color-chrome: #ece7e5;
+  --color-chrome-border: #d7d0cd;
+  --color-list: #ffffff;
+  --color-header: #f6f3f2;
+  --color-hairline: #dcd6d3;
+  --color-ink: #1c1c1e;
+  --color-ink-soft: #4b4b50;
+  --color-ink-faint: #8a8a8f;
+  --color-accent: #0a67d0;
+  --color-danger: #b3261e;
+
+  /* Row metrics: the reference list fits ~9 rows in ~215px. */
+  --spacing-row: 24.5px;
+
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-hex:
+    "Cascadia Mono", "SF Mono", "Consolas", ui-monospace, monospace;
+}
+
+/*
+ * Event rows use the proportional system font, matching the reference window —
+ * "Channel Pressure" there is clearly proportional, not monospaced. Tabular
+ * figures keep the Time column's digits in vertical alignment anyway, which is
+ * what makes a monospace font look tempting and unnecessary.
+ */
+.event-row {
+  font-variant-numeric: tabular-nums;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-chrome);
+  color: var(--color-ink);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  /* A monitor is not a document: selecting the chrome while chasing a row is
+     noise, so text selection is limited to the event list itself. */
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * The reference is a macOS window in the light appearance, and reproducing it
+ * is the requirement. A dark repaint would be a different design, so the app
+ * commits to this one and states the background explicitly rather than
+ * inheriting the host's theme.
+ */

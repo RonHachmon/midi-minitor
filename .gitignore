@@ -1,0 +1,25 @@
+# Rust
+target/
+debug/
+**/*.rs.bk
+*.rlib
+*.prof*
+
+# Node / Vite
+node_modules/
+dist/
+build/
+*.log
+.env*
+
+# Generated IPC bindings — produced by tauri-specta on every debug build.
+# Tracked as build output, never hand-edited (Constitution IV).
+src/bindings.ts
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp

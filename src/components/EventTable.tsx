@@ -1,0 +1,191 @@
+import { useEffect, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import type { ColumnDto, EventDto } from "../bindings";
+import { useMonitorStore } from "../store";
+import { ColumnMenu } from "./ColumnMenu";
+
+/** Fixed width for each column, keyed by its wire identifier. */
+const COLUMN_WIDTH: Record<string, string> = {
+  time: "108px",
+  source: "210px",
+  message: "150px",
+  chan: "52px",
+  data: "minmax(0, 1fr)",
+};
+
+/** Row height in pixels, matching the `--spacing-row` token. */
+const ROW_HEIGHT = 24.5;
+
+/** Reads one column's cell out of an event. */
+function cellValue(event: EventDto, columnId: string): string {
+  switch (columnId) {
+    case "time":
+      return event.time;
+    case "source":
+      return event.source;
+    case "message":
+      return event.message;
+    case "chan":
+      // Blank rather than a placeholder: messages carrying no channel must show
+      // an empty cell, as in the reference window.
+      return event.channel === null ? "" : String(event.channel);
+    case "data":
+      return event.data;
+    default:
+      return "";
+  }
+}
+
+/**
+ * Explains an empty list.
+ *
+ * # Why three messages rather than one
+ *
+ * An empty monitor has three quite different causes and the user's next action
+ * differs for each: nothing is selected, everything is filtered out, or traffic
+ * simply has not arrived yet. A single "Waiting for events…" would be actively
+ * misleading in the first two — the application would look stalled when it is
+ * doing exactly what it was told. `retainedCount` is what separates them: events
+ * are being retained, they are just not passing the filter.
+ */
+function emptyReason(monitoring: boolean, retainedCount: number): string {
+  if (!monitoring) {
+    return "No sources selected — nothing is being monitored.";
+  }
+  if (retainedCount > 0) {
+    return `All ${retainedCount} retained events are hidden by the current filter.`;
+  }
+  return "Waiting for events…";
+}
+
+/**
+ * The scrolling event list.
+ *
+ * # Why the rows are virtualized
+ *
+ * The retention cap reaches 100 000 events. Rendering that many table rows
+ * would cost hundreds of megabytes of DOM and drop the window well below the
+ * responsiveness the specification requires. The virtualizer keeps only the
+ * visible rows mounted, so scroll cost is independent of how much is retained.
+ *
+ * # Why it does not decide what to show
+ *
+ * Every event handed to this component has already passed the filters in Rust.
+ * There is no predicate here beyond which *columns* are visible — filtering in
+ * the webview would put a MIDI rule on the wrong side of the boundary.
+ */
+export function EventTable() {
+  const events = useMonitorStore((state) => state.events);
+  const columns = useMonitorStore((state) => state.columns);
+  const monitoring = useMonitorStore((state) => state.monitoring);
+  const retainedCount = useMonitorStore((state) => state.retainedCount);
+
+  const scroller = useRef<HTMLDivElement>(null);
+  const pinnedToBottom = useRef(true);
+
+  const virtualizer = useVirtualizer({
+    count: events.length,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+  });
+
+  // New events arrive at the bottom, so the list follows them — but only while
+  // the user is already there. Yanking the view back down while someone is
+  // reading history would make the monitor unusable at speed.
+  useEffect(() => {
+    if (pinnedToBottom.current && events.length > 0) {
+      virtualizer.scrollToIndex(events.length - 1, { align: "end" });
+    }
+  }, [events.length, virtualizer]);
+
+  const visible: ColumnDto[] = columns.filter((column) => column.visible);
+  const template = visible
+    .map((column) => COLUMN_WIDTH[column.id] ?? "minmax(0, 1fr)")
+    .join(" ");
+
+  const onScroll = () => {
+    const element = scroller.current;
+    if (!element) {
+      return;
+    }
+    const distance =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    pinnedToBottom.current = distance < ROW_HEIGHT * 2;
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col border-t border-(--color-hairline) bg-(--color-list)">
+      {/*
+        The menu sits outside the grid rather than as an extra child of it: the
+        grid has exactly one track per visible column, so a sixth child would be
+        placed in an implicit track past the container's right edge and never be
+        clickable. Overlaying it keeps the header's tracks aligned with the body
+        rows, which is what matters for the columns to line up.
+      */}
+      <div className="relative shrink-0 border-b border-(--color-hairline) bg-(--color-header)">
+        <div
+          className="grid items-center pr-6 text-[13px] text-(--color-ink-soft)"
+          style={{ gridTemplateColumns: template }}
+        >
+          {visible.map((column, index) => (
+            <div
+              key={column.id}
+              className={`px-2 py-1 ${index > 0 ? "border-l border-(--color-hairline)" : ""}`}
+            >
+              {column.label}
+            </div>
+          ))}
+        </div>
+        <div className="absolute inset-y-0 right-0 flex items-center">
+          <ColumnMenu />
+        </div>
+      </div>
+
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        className="min-h-0 flex-1 overflow-auto select-text"
+      >
+        {events.length === 0 ? (
+          <p className="px-2 py-3 text-[13px] text-(--color-ink-faint)">
+            {emptyReason(monitoring, retainedCount)}
+          </p>
+        ) : (
+          <div
+            className="relative w-full"
+            style={{ height: `${virtualizer.getTotalSize()}px` }}
+          >
+            {virtualizer.getVirtualItems().map((item) => {
+              const event = events[item.index];
+              if (event === undefined) {
+                return null;
+              }
+              return (
+                <div
+                  key={event.id}
+                  title={event.rawHex}
+                  className="event-row absolute top-0 left-0 grid w-full items-center text-[13px] text-(--color-ink)"
+                  style={{
+                    height: `${item.size}px`,
+                    transform: `translateY(${item.start}px)`,
+                    gridTemplateColumns: template,
+                  }}
+                >
+                  {visible.map((column) => (
+                    <div
+                      key={column.id}
+                      className="truncate px-2"
+                    >
+                      {cellValue(event, column.id)}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissions for the single monitor window. Deliberately minimal: the app reads no files, opens no shells, and reaches no network — it only needs its own window and the settings store.","local":true,"windows":["main"],"permissions":["core:default","store:default"]}}
