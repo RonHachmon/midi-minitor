@@ -9,14 +9,21 @@
 
 use crate::domain::column::ColumnVisibility;
 use crate::domain::filter::FilterSettings;
-use crate::domain::ids::{RetentionLimit, SourceId};
+use crate::domain::ids::{RetentionLimit, SourceKey};
 use serde::{Deserialize, Serialize};
 
 /// Everything restored on the next launch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedSettings {
-    /// Which sources were being monitored.
-    pub selected_sources: Vec<SourceId>,
+    /// Which sources were being monitored, by an identity that outlives the
+    /// session.
+    ///
+    /// Keyed on [`SourceKey`] rather than a session id, because a session id is
+    /// minted in discovery order and would restore yesterday's choices onto
+    /// today's arbitrary numbering. Includes devices that were **not attached**
+    /// when the settings were written, so unplugging a device and quitting does
+    /// not silently forget that the user had selected it.
+    pub selected_sources: Vec<SourceKey>,
     /// Message kinds, channel mode, and the hexadecimal prefix filter.
     pub filter: FilterSettings,
     /// Which columns were shown.

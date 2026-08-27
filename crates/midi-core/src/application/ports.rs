@@ -14,35 +14,45 @@ use crate::domain::source::Source;
 ///
 /// # The problem this solves
 ///
-/// This application ships with a simulator, and real MIDI input is expected to
-/// replace it. Without this port that swap would reach into the domain and the
-/// use cases; with it, the swap is a different implementation of one trait and
-/// nothing above the adapter layer changes or even notices.
+/// Device access is platform-specific and the domain must stay free of it. This
+/// port is the seam: the macOS CoreMIDI adapter is one implementation, and
+/// nothing above it names a platform or knows which one is in use.
 ///
-/// Note what the trait does *not* expose: no flag saying whether the data is
-/// simulated, no "fake" in any name. Nothing above the implementation is able to
-/// tell the difference, which is the whole point.
+/// Note what the trait does *not* expose: no flag describing where the data came
+/// from, and no way for a caller to distinguish one implementation from another.
+/// That is deliberate and load-bearing — it is what kept the event path, the
+/// filters, and the whole webview unchanged when generated traffic was replaced
+/// by real hardware.
 pub trait EventSource: Send {
-    /// Begins producing events, delivering each to `sink`.
+    /// Begins producing events, delivering each to `events`.
     ///
-    /// The sink is called from the source's own thread, so implementations of it
-    /// must be cheap and must not block — the monitor's ingest path is the
+    /// `catalogue` is called whenever the set of available sources changes.
+    ///
+    /// Both sinks are called from the source's own thread, so implementations of
+    /// them must be cheap and must not block — the monitor's ingest path is the
     /// intended consumer.
     ///
     /// # Errors
     ///
-    /// Returns a [`CoreError`] when the source cannot start. The simulator
-    /// cannot fail here, but a real MIDI adapter can — the port has to admit
-    /// that possibility now, or every caller would need changing later.
-    fn start(&mut self, sink: EventSink) -> Result<(), CoreError>;
+    /// Returns a [`CoreError`] when the source cannot start at all — typically
+    /// [`CoreError::MidiSystemUnavailable`] when the platform's MIDI service
+    /// cannot be reached. A *single* port failing to open is not an error here:
+    /// it is reported on that source's
+    /// [`crate::domain::source::Availability`], because the application must keep
+    /// monitoring everything else.
+    fn start(&mut self, events: EventSink, catalogue: CatalogueSink) -> Result<(), CoreError>;
 
     /// Stops producing events. Idempotent.
     fn stop(&mut self);
 
-    /// The sources this implementation can produce events for.
+    /// The sources available right now.
     ///
-    /// Fixed for the lifetime of the process: device hot-plug is out of scope,
-    /// so callers may cache the result.
+    /// # Why this is only a snapshot
+    ///
+    /// It once promised a fixed list callers could cache. It cannot any more:
+    /// devices are attached and removed while the application runs, so this is
+    /// the set at the moment of asking and nothing more. Every later change
+    /// arrives through the [`CatalogueSink`] given to [`Self::start`].
     fn catalogue(&self) -> Vec<Source>;
 }
 
@@ -52,6 +62,42 @@ pub trait EventSource: Send {
 /// delivery is coordinated — the monitor may lock, batch, or drop, and none of
 /// that is the source's business.
 pub type EventSink = Box<dyn Fn(MidiEvent) + Send + Sync>;
+
+/// Where an [`EventSource`] reports that the set of sources has changed.
+///
+/// # The problem this solves
+///
+/// **Observer.** The pressure is concrete and belongs to the operating system,
+/// not to this application: only the OS knows when someone plugs in a cable, so
+/// there is no moment at which asking would be correct. The application has to be
+/// told.
+///
+/// The alternative — polling [`EventSource::catalogue`] on a timer from the layer
+/// above — was rejected twice over: it would put a refresh policy in the Tauri
+/// layer, which is required to hold no logic, and it would trade a correct push
+/// for a latency-versus-CPU tradeoff that a user watching the Sources list would
+/// see.
+pub type CatalogueSink = Box<dyn Fn(Vec<Source>) + Send + Sync>;
+
+/// Whether the platform's MIDI system could be reached at all.
+///
+/// # Why this is not just an empty catalogue
+///
+/// "Nothing is attached" and "I cannot see what is attached" look identical in a
+/// list of zero devices, and they call for completely different responses — plug
+/// something in, versus grant permission or investigate the system. Conflating
+/// them would leave a user staring at an empty window with no idea which
+/// situation they are in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MidiSystemStatus {
+    /// The MIDI system was reached. The catalogue is trustworthy, empty or not.
+    Available,
+    /// The MIDI system could not be reached, and this is why.
+    Unavailable {
+        /// What the platform reported, for the interface to show.
+        detail: String,
+    },
+}
 
 /// Where settings survive between sessions.
 ///

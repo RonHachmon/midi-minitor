@@ -1,20 +1,74 @@
 //! Monitored sources and the tri-state grouping shown in the Sources panel.
 
-use super::ids::{SourceGroupId, SourceId};
+use super::ids::{SourceGroupId, SourceId, SourceKey};
 use serde::{Deserialize, Serialize};
 
 /// A named origin of events, as listed in `screenshots/sources.png`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
-    /// Identity. Two sources may share a display name, so this is what
+    /// Session identity. Two sources may share a display name, so this is what
     /// selection actually keys on.
     pub id: SourceId,
+    /// Identity that outlives the session — what a saved selection is stored
+    /// against, so a device found again after a replug is recognised as the same
+    /// device rather than as a new one.
+    pub key: SourceKey,
     /// The name shown in the list and in the Source column.
+    ///
+    /// Supplied by the operating system and used verbatim. Cleaning it up would
+    /// make this list disagree with every other MIDI utility on the machine,
+    /// which is the opposite of helping someone identify a device.
     pub name: String,
     /// The group this source is indented under, or [`None`] for a standalone row.
     pub group: Option<SourceGroupId>,
     /// Whether events from this source enter the monitor.
     pub selected: bool,
+    /// Whether it is currently able to deliver anything.
+    pub availability: Availability,
+}
+
+/// Whether a listed source can currently deliver events, and if not, why.
+///
+/// # The problem this solves
+///
+/// With a fixed set of simulated sources every row was always live, so the
+/// question never arose. Real hardware makes three states routinely visible, and
+/// they call for different responses from the user: nothing is wrong, something
+/// else has the device, or the device is not here. Collapsing them into a
+/// boolean would leave the interface unable to say which.
+///
+/// Exhaustive matching everywhere, with no catch-all arm: a fourth state must
+/// force a compile error at every site that renders one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Availability {
+    /// Attached and listening.
+    Open,
+    /// Attached, but the port could not be opened.
+    Unopenable {
+        /// What the operating system reported, for the interface to show.
+        detail: String,
+    },
+    /// Remembered from a previous session and not currently attached.
+    ///
+    /// Listed rather than hidden so the user can see that a device they chose is
+    /// missing, instead of silently wondering where its traffic went.
+    Absent,
+}
+
+impl Availability {
+    /// The reason this source cannot deliver, or [`None`] when it can.
+    ///
+    /// Returns the message the interface should show rather than a flag, because
+    /// an unavailable row without an explanation is a state the Sources panel
+    /// must never have to render.
+    #[must_use]
+    pub fn reason(&self) -> Option<String> {
+        match self {
+            Self::Open => None,
+            Self::Unopenable { detail } => Some(detail.clone()),
+            Self::Absent => Some("Not connected".to_owned()),
+        }
+    }
 }
 
 /// Whether a group's checkbox is on, off, or partially on.
@@ -58,36 +112,85 @@ impl CheckState {
     }
 }
 
-/// The fixed set of sources this application monitors.
+/// The sources this application is currently able to monitor.
 ///
-/// The catalogue is established once at startup. Simulated device hot-plug is
-/// out of scope, so there is no add or remove — which is why callers can hold a
-/// [`SourceId`] without worrying that it will stop resolving.
+/// # Why this changes at runtime
+///
+/// It did not always. When the sources were simulated this catalogue was built
+/// once at startup and never altered, and callers were told they could hold a
+/// [`SourceId`] indefinitely. Real devices are plugged in and unplugged while the
+/// application runs, so that guarantee could not survive: [`Self::replace`] swaps
+/// the live set whenever the operating system reports a change.
+///
+/// **What callers must therefore assume**: a [`SourceId`] can stop resolving at
+/// any moment. Every lookup here returns an [`Option`] or a `Result` for exactly
+/// that reason, and a stale id must be treated as "refresh your list", never as
+/// an error worth interrupting the user over.
 #[derive(Debug, Clone, Default)]
 pub struct SourceCatalogue {
     sources: Vec<Source>,
 }
 
 impl SourceCatalogue {
-    /// Builds a catalogue from the sources a [`crate::application::ports::EventSource`] reports.
+    /// Builds a catalogue from the sources an [`crate::application::ports::EventSource`] reports.
     #[must_use]
     pub const fn new(sources: Vec<Source>) -> Self {
         Self { sources }
     }
 
-    /// Every source, in the order the reference screenshot lists them.
+    /// Swaps in a newly discovered set of sources, carrying selections across.
+    ///
+    /// # Why selection is preserved by key rather than by position
+    ///
+    /// The incoming list is freshly enumerated, so its [`SourceId`]s are new and
+    /// its ordering may differ. Matching on [`SourceKey`] is what makes an
+    /// unplug-and-replug return a device *still ticked* instead of silently
+    /// reset — the behaviour a user notices immediately if it is wrong.
+    ///
+    /// Sources absent from `incoming` simply disappear; restoring the selections
+    /// of devices that have gone away is the caller's job, since only the caller
+    /// knows what was remembered from previous sessions.
+    pub fn replace(&mut self, incoming: Vec<Source>) {
+        let previous: Vec<(SourceKey, bool)> = self
+            .sources
+            .iter()
+            .map(|source| (source.key, source.selected))
+            .collect();
+
+        self.sources = incoming
+            .into_iter()
+            .map(|mut source| {
+                if let Some((_, was_selected)) = previous.iter().find(|(key, _)| *key == source.key)
+                {
+                    source.selected = *was_selected;
+                }
+                source
+            })
+            .collect();
+    }
+
+    /// Every source, in the order the event source reported them.
     #[must_use]
     pub fn sources(&self) -> &[Source] {
         &self.sources
     }
 
-    /// The display name for a source, if the id is known.
+    /// The display name for a source, if the id still resolves.
     #[must_use]
     pub fn name_of(&self, id: SourceId) -> Option<&str> {
         self.sources
             .iter()
             .find(|source| source.id == id)
             .map(|source| source.name.as_str())
+    }
+
+    /// The persistent identity behind a session id, if it still resolves.
+    #[must_use]
+    pub fn key_of(&self, id: SourceId) -> Option<SourceKey> {
+        self.sources
+            .iter()
+            .find(|source| source.id == id)
+            .map(|source| source.key)
     }
 
     /// The label the Source column shows for events from this source.
@@ -124,20 +227,20 @@ impl SourceCatalogue {
 
     /// Whether any source at all is selected.
     ///
-    /// Drives the "nothing is being monitored" state, which must be
-    /// distinguishable from "no traffic right now".
+    /// False means the empty list is a configuration state, not an absence of
+    /// traffic, and the interface must say so rather than looking frozen.
     #[must_use]
     pub fn any_selected(&self) -> bool {
         self.sources.iter().any(|source| source.selected)
     }
 
-    /// Selects or deselects one source.
+    /// Selects or deselects one source, purging its retained events when off.
     ///
     /// # Errors
     ///
     /// Returns [`crate::application::error::CoreError::UnknownSource`] when the
-    /// id is not in the catalogue, which means the caller is working from a
-    /// stale list and should refresh it.
+    /// id is not in the catalogue, which means the caller is working from a list
+    /// made stale by a device disappearing.
     pub fn set_selected(
         &mut self,
         id: SourceId,
@@ -148,6 +251,13 @@ impl SourceCatalogue {
         };
         source.selected = selected;
         Ok(())
+    }
+
+    /// Records that a port could not be opened, so the row can explain itself.
+    pub fn set_unopenable(&mut self, id: SourceId, detail: String) {
+        if let Some(source) = self.sources.iter_mut().find(|source| source.id == id) {
+            source.availability = Availability::Unopenable { detail };
+        }
     }
 
     /// Applies one selection state to every member of a group.
@@ -185,23 +295,36 @@ impl SourceCatalogue {
 
     /// Restores selections saved from a previous session.
     ///
-    /// Ids absent from `selected` are left deselected, and ids that no longer
-    /// exist are ignored — a settings file from an older catalogue should not
-    /// prevent startup.
-    pub fn apply_selection(&mut self, selected: &[SourceId]) {
+    /// Keys absent from `selected` are left deselected, and keys naming devices
+    /// that are not attached are ignored here — the caller remembers those
+    /// separately so they can be restored if the device comes back.
+    pub fn apply_selection(&mut self, selected: &[SourceKey]) {
         for source in &mut self.sources {
-            source.selected = selected.contains(&source.id);
+            source.selected = selected.contains(&source.key);
         }
     }
 
-    /// The ids of every currently selected source, for persistence.
+    /// The identities of every currently selected source, for persistence.
+    ///
+    /// Returns keys rather than ids because these outlive the session; see
+    /// [`SourceKey`].
     #[must_use]
-    pub fn selected_ids(&self) -> Vec<SourceId> {
+    pub fn selected_keys(&self) -> Vec<SourceKey> {
         self.sources
             .iter()
             .filter(|source| source.selected)
-            .map(|source| source.id)
+            .map(|source| source.key)
             .collect()
+    }
+
+    /// Every key currently in the catalogue, selected or not.
+    ///
+    /// Lets the caller tell "this device is here and the user turned it off"
+    /// apart from "this device is not here", which decides whether a remembered
+    /// selection should be kept or dropped.
+    #[must_use]
+    pub fn present_keys(&self) -> Vec<SourceKey> {
+        self.sources.iter().map(|source| source.key).collect()
     }
 }
 

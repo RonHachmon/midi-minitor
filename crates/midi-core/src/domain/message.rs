@@ -20,6 +20,10 @@
 //! Adapting a protocol crate would mean writing this same mapping anyway, on top
 //! of a dependency. The domain enum *is* the domain here.
 //!
+//! [`super::decoder`] makes the same argument one level down, for turning a live
+//! byte stream into these variants: every candidate decoder returns `Err` for the
+//! malformed input this application is required to display as a row.
+//!
 //! # Exhaustiveness is deliberate
 //!
 //! Every `match` in this module lists its variants with no catch-all arm. Adding
@@ -207,9 +211,10 @@ impl MessageKind {
 
 /// Why a message was classified as invalid.
 ///
-/// The simulator produces these on purpose so the `Invalid` filter checkbox has
-/// something to suppress — a control the user cannot exercise is a control that
-/// cannot be verified.
+/// Produced by [`super::decoder`] when arriving bytes form no valid message.
+/// Carrying the reason rather than just the bytes is what lets the Data column
+/// say *how* the data was malformed, which is usually the fact the person
+/// debugging the device actually needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InvalidReason {
     /// A status byte that no MIDI status corresponds to.
@@ -474,93 +479,6 @@ impl MidiMessage {
                 format!("{} ({} bytes)", reason.label(), bytes.len())
             }
         }
-    }
-
-    /// The message as it would appear on the wire.
-    ///
-    /// # Why bytes are derived rather than stored
-    ///
-    /// The hex-prefix filter matches against raw bytes and the raw view displays
-    /// them, so they must agree with the message exactly. Deriving them from the
-    /// one authoritative representation removes the possibility of disagreement;
-    /// storing a second copy alongside the message would create two sources of
-    /// truth for one fact.
-    #[must_use]
-    pub fn raw_bytes(&self) -> Vec<u8> {
-        match self {
-            Self::NoteOff {
-                channel,
-                note,
-                velocity,
-            } => vec![0x80 | channel.to_wire_nibble(), note.get(), velocity.get()],
-            Self::NoteOn {
-                channel,
-                note,
-                velocity,
-            } => vec![0x90 | channel.to_wire_nibble(), note.get(), velocity.get()],
-            Self::AftertouchPoly {
-                channel,
-                note,
-                pressure,
-            } => vec![0xA0 | channel.to_wire_nibble(), note.get(), pressure.get()],
-            Self::Control {
-                channel,
-                controller,
-                value,
-            } => vec![
-                0xB0 | channel.to_wire_nibble(),
-                controller.get(),
-                value.get(),
-            ],
-            Self::Program { channel, program } => {
-                vec![0xC0 | channel.to_wire_nibble(), program.get()]
-            }
-            Self::ChannelPressure { channel, pressure } => {
-                vec![0xD0 | channel.to_wire_nibble(), pressure.get()]
-            }
-            Self::PitchWheel { channel, value } => {
-                let (least, most) = value.to_wire_pair();
-                vec![0xE0 | channel.to_wire_nibble(), least, most]
-            }
-            Self::TimeCode { data } => vec![0xF1, data.get()],
-            Self::SongPositionPointer { position } => {
-                let (least, most) = position.to_wire_pair();
-                vec![0xF2, least, most]
-            }
-            Self::SongSelect { song } => vec![0xF3, song.get()],
-            Self::TuneRequest => vec![0xF6],
-            Self::Clock => vec![0xF8],
-            Self::Start => vec![0xFA],
-            Self::Continue => vec![0xFB],
-            Self::Stop => vec![0xFC],
-            Self::ActiveSense => vec![0xFE],
-            Self::Reset => vec![0xFF],
-            Self::SystemExclusive { payload } => {
-                let mut bytes = Vec::with_capacity(payload.len() + 2);
-                bytes.push(0xF0);
-                bytes.extend_from_slice(payload);
-                bytes.push(0xF7);
-                bytes
-            }
-            Self::Invalid { bytes, .. } => bytes.clone(),
-        }
-    }
-
-    /// The raw bytes as an uppercase hex string with no separators.
-    ///
-    /// This is the exact string the hex-prefix filter tests against, so a user
-    /// reading it in the raw view can type any leading portion of what they see
-    /// and expect it to match.
-    #[must_use]
-    pub fn raw_hex(&self) -> String {
-        let bytes = self.raw_bytes();
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            // Two uppercase hex digits per byte, zero padded, so nibble
-            // positions line up and prefix matching stays a plain string test.
-            hex.push_str(&format!("{byte:02X}"));
-        }
-        hex
     }
 }
 

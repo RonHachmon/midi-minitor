@@ -81,10 +81,40 @@ pub enum CoreError {
     /// A source id arrived that the catalogue does not contain.
     ///
     /// Signals a stale interface referring to a source that no longer exists.
-    /// The caller should refresh its catalogue rather than retry.
+    /// With real hardware this is ordinary rather than exceptional: a device can
+    /// be unplugged between the webview rendering a row and the user clicking
+    /// it. The caller should refresh its catalogue rather than retry.
     #[error("no source with id {}", id.get())]
     UnknownSource {
         /// The unrecognised id.
         id: SourceId,
+    },
+
+    /// A port exists but could not be opened for listening.
+    ///
+    /// Produced when another application holds the device exclusively, or when
+    /// the operating system refuses the connection. The caller must **keep
+    /// monitoring every port that did open** and surface this against the one
+    /// that did not — one unavailable device is not a reason to stop watching
+    /// the others.
+    #[error("could not open '{name}': {detail}")]
+    PortUnavailable {
+        /// The port's display name, so the message can identify it to the user.
+        name: String,
+        /// What the operating system reported.
+        detail: String,
+    },
+
+    /// The MIDI system itself could not be reached.
+    ///
+    /// Produced when the platform's MIDI service is unavailable or access was
+    /// refused. The caller must present this as **distinct from having found no
+    /// devices**: "there is nothing attached" and "I cannot see what is
+    /// attached" call for entirely different responses from the user, and an
+    /// empty list would conflate them.
+    #[error("the MIDI system is unavailable: {detail}")]
+    MidiSystemUnavailable {
+        /// What the platform reported, for the message.
+        detail: String,
     },
 }

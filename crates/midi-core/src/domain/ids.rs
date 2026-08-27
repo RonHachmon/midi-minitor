@@ -17,10 +17,18 @@ use serde::{Deserialize, Serialize};
 
 /// Identifies one monitored source for the lifetime of the process.
 ///
-/// Opaque and never displayed: the Sources list shows a name, but two entries
-/// can legitimately share one (`IAC Driver Bus 1` appears under both
-/// `MIDI sources` and `Spy on output to destinations`). Identity is this id, so
-/// selecting one of those entries cannot silently select the other.
+/// Opaque and never displayed: the Sources list shows a name, but two attached
+/// devices can legitimately report the same one — two identical controllers, or
+/// two ports of one interface. Identity is this id, so selecting one of them
+/// cannot silently select the other.
+///
+/// # Why this is a session handle and not the device's real identity
+///
+/// This value is minted as ports are discovered and is reassigned freely across
+/// launches. It exists to be small, dense, and cheap to send to the webview,
+/// which is why it is `u32`. The identity that must survive a quit, a replug,
+/// and a reboot is [`SourceKey`], and the two are deliberately different types
+/// so neither can be used for the other's job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceId(u32);
 
@@ -36,6 +44,45 @@ impl SourceId {
     pub const fn get(self) -> u32 {
         self.0
     }
+}
+
+/// The identity of a source that outlives the session.
+///
+/// # The problem this solves
+///
+/// A saved selection must find the same physical port on the next launch, even
+/// if the device was moved to a different socket or the machine was rebooted.
+/// [`SourceId`] cannot do that: it is minted in discovery order and changes
+/// whenever the set of attached devices changes. Persisting it would mean
+/// restoring yesterday's choices onto today's arbitrary numbering.
+///
+/// # Why this never crosses the IPC boundary
+///
+/// It carries a signed 32-bit value, because that is what the operating system
+/// supplies as a port's unique identifier. Sending it to the webview would put
+/// a negative number into a contract where [`SourceId`] is deliberately
+/// unsigned, and the webview has no use for it — it keys rows on [`SourceId`].
+/// Keeping this type off the wire is precisely what allows the wire type to stay
+/// simple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SourceKey {
+    /// A real endpoint, keyed on the identifier the operating system assigns it.
+    ///
+    /// Signed because the platform's unique-id property is signed, and sparse
+    /// rather than sequential — it is a handle to compare, never to count with.
+    Endpoint(i32),
+
+    /// The endpoint this application publishes for other programs to send to.
+    ///
+    /// # Why a named variant rather than an endpoint id
+    ///
+    /// An endpoint created at runtime is assigned a fresh unique id on every
+    /// launch unless one is set explicitly, so keying it like a real device
+    /// would mean persisting an id in order to look up a persisted id. There is
+    /// exactly one such endpoint, so naming it makes its identity stable for
+    /// free — and makes "the virtual destination" unrepresentable as anything
+    /// else.
+    VirtualDestination,
 }
 
 /// The two named, collapsible groups in `screenshots/sources.png`.

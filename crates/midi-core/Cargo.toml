@@ -3,7 +3,7 @@ name = "midi-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Tauri-free monitoring core: MIDI domain model, filtering rules, and the simulated event source."
+description = "Tauri-free monitoring core: MIDI domain model, byte-stream decoding, and filtering rules."
 
 # NOTE: `tauri` is deliberately absent and must stay absent.
 # This crate is the domain and application layer; the constitution requires
@@ -13,10 +13,13 @@ description = "Tauri-free monitoring core: MIDI domain model, filtering rules, a
 # `specta` is absent too: wire-serialization derives belong to the DTOs in
 # `src-tauri`, so the domain's shape is never held hostage to what the webview
 # needs to serialize (contracts/ipc-contract.md, rule 3).
+#
+# There is no random-number dependency here, and that is deliberate. `rand` was
+# present only to seed the traffic generator; nothing in this crate invents data
+# any more, so the dependency left with the module that needed it.
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
-rand = { workspace = true }
 
 [lints]
 workspace = true

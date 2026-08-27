@@ -5,14 +5,20 @@ use super::message::MidiMessage;
 
 /// A single message as observed from a source, at a moment in time.
 ///
-/// # Why the derived values are not stored
+/// # Why the raw bytes are stored but the display values are not
 ///
-/// The Chan cell, the Data cell, and the raw hex string are all functions of
-/// [`Self::message`], so each is computed on demand rather than cached
-/// alongside it. Caching them would create several representations of one fact
-/// that could disagree after a change — and with no test suite, a disagreement
-/// between a stored display string and the message it came from would surface
-/// as a user seeing the wrong value rather than as a failing assertion.
+/// The Chan cell and the Data cell are functions of [`Self::message`], so each is
+/// computed on demand. Caching them would create several representations of one
+/// fact that could disagree after a change.
+///
+/// The raw bytes are different, and the distinction matters. They are **not**
+/// derivable from the message, because interpretation is lossy in two ordinary
+/// cases: under running status the wire carries no status byte, and a `Note On`
+/// with velocity zero means a release, so re-encoding it would produce an `8n`
+/// status the device never sent. A monitor that showed reconstructed bytes would
+/// be lying in exactly the situations someone opened it to investigate — so the
+/// bytes that arrived are kept, and they are the authority for the raw view and
+/// for the hex prefix filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiEvent {
     /// Arrival order and identity.
@@ -25,24 +31,28 @@ pub struct MidiEvent {
     pub timestamp: Timestamp,
     /// Which source produced it.
     pub source: SourceId,
-    /// The message itself — the authority for every derived column.
+    /// The interpretation — the authority for the Message, Chan, and Data columns.
     pub message: MidiMessage,
+    /// The bytes exactly as they arrived, unaltered in value or order.
+    pub raw: Vec<u8>,
 }
 
 impl MidiEvent {
-    /// Assembles an event.
+    /// Assembles an event from an interpretation and the bytes it came from.
     #[must_use]
     pub const fn new(
         id: EventId,
         timestamp: Timestamp,
         source: SourceId,
         message: MidiMessage,
+        raw: Vec<u8>,
     ) -> Self {
         Self {
             id,
             timestamp,
             source,
             message,
+            raw,
         }
     }
 
@@ -53,8 +63,18 @@ impl MidiEvent {
     }
 
     /// The uppercase, separator-free hex string the prefix filter matches against.
+    ///
+    /// Formatted from the received bytes rather than from the message, so a user
+    /// reading this string is reading what the device actually transmitted and can
+    /// type any leading portion of it into the prefix filter with confidence.
     #[must_use]
     pub fn raw_hex(&self) -> String {
-        self.message.raw_hex()
+        let mut hex = String::with_capacity(self.raw.len() * 2);
+        for byte in &self.raw {
+            // Two uppercase hex digits per byte, zero padded, so nibble positions
+            // line up and prefix matching stays a plain string test.
+            hex.push_str(&format!("{byte:02X}"));
+        }
+        hex
     }
 }

@@ -41,3 +41,20 @@ pub const MAX_DATA_14: u16 = 16_383;
 
 /// Milliseconds in a day, the modulus for a wall-clock timestamp.
 pub const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
+
+/// Largest System Exclusive transfer retained in full.
+///
+/// # Why there is a ceiling at all
+///
+/// A System Exclusive transfer is framed by its end byte, not by a declared
+/// length, so a device that starts one and never finishes it would otherwise
+/// grow a buffer without bound. A monitor that exhausts memory watching a
+/// misbehaving device has failed at the one job it had.
+///
+/// The value matches the practical packet-buffer ceiling the operating system's
+/// own MIDI stack works to, so a transfer this application truncates is one the
+/// platform was not going to deliver intact either.
+///
+/// Passing the ceiling is reported, never silent: the transfer is listed with
+/// its **true** size so the user learns how big it actually was.
+pub const MAX_SYSEX_BYTES: usize = 65_536;
