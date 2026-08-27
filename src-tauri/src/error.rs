@@ -109,6 +109,22 @@ impl From<CoreError> for IpcError {
             CoreError::LastColumnVisible => Self::LastColumnVisible,
             CoreError::SettingsStorage { detail } => Self::SettingsUnavailable { detail },
             CoreError::UnknownSource { id } => Self::UnknownSource { id: id.get() },
+
+            // Hardware trouble is deliberately **not** given its own wire error.
+            //
+            // A device that will not open, or a MIDI system that cannot be
+            // reached, is a state the user must see and work around — not a
+            // failed command. As an error it would arrive as a rejected call with
+            // nowhere sensible to render it, and would imply the whole operation
+            // failed when every other device connected fine. These travel as data
+            // instead, on `SourceDto.unavailable` and `MidiSystemStatusDto`.
+            //
+            // Reaching here means one leaked out of a path that should have
+            // recorded it against a row, so it is reported rather than hidden.
+            CoreError::PortUnavailable { name, detail } => Self::SettingsUnavailable {
+                detail: format!("{name}: {detail}"),
+            },
+            CoreError::MidiSystemUnavailable { detail } => Self::SettingsUnavailable { detail },
         }
     }
 }

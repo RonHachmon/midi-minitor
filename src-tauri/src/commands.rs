@@ -13,8 +13,8 @@
 //! list rather than patching it.
 
 use crate::dto::{
-    columns, filter_view, source_groups, ChannelModeDto, ColumnDto, EventBatchDto, FilterViewDto,
-    PrefixModeDto, SnapshotDto, SourceGroupDto,
+    catalogue, columns, filter_view, CatalogueDto, ChannelModeDto, ColumnDto, EventBatchDto,
+    FilterViewDto, MutationResultDto, PrefixModeDto, SnapshotDto,
 };
 use crate::error::{IpcError, IpcResult};
 use crate::state::AppState;
@@ -25,12 +25,28 @@ use midi_core::domain::message::MessageKind;
 use tauri::ipc::Channel;
 use tauri::State;
 
-/// The Sources panel's structure and current selections.
+/// The Sources panel's structure, current selections, and MIDI system status.
 #[tauri::command]
 #[specta::specta]
-pub fn get_catalogue(state: State<'_, AppState>) -> IpcResult<Vec<SourceGroupDto>> {
+pub fn get_catalogue(state: State<'_, AppState>) -> IpcResult<CatalogueDto> {
     let monitor = state.monitor()?;
-    Ok(source_groups(&monitor))
+    Ok(catalogue(&monitor))
+}
+
+/// Registers the webview's channel for catalogue changes.
+///
+/// Returns the current catalogue in the same round trip, so there is never a
+/// moment where the webview is subscribed but has nothing rendered — the same
+/// pattern [`subscribe_events`] uses.
+#[tauri::command]
+#[specta::specta]
+pub fn subscribe_catalogue(
+    state: State<'_, AppState>,
+    channel: Channel<CatalogueDto>,
+) -> IpcResult<CatalogueDto> {
+    state.catalogue_pump.subscribe(channel);
+    let monitor = state.monitor()?;
+    Ok(catalogue(&monitor))
 }
 
 /// The Filter panel's structure and current state.
@@ -73,19 +89,26 @@ pub fn subscribe_events(
     Ok(SnapshotDto::from_monitor(&monitor))
 }
 
-/// Selects or deselects one source.
+/// Selects or deselects one source, opening or closing its port to match.
+///
+/// Returns the catalogue as well as the snapshot: selecting a device can reveal
+/// that its port will not open, and the snapshot has nowhere to report that.
 #[tauri::command]
 #[specta::specta]
 pub fn set_source_selected(
     state: State<'_, AppState>,
     source_id: u32,
     selected: bool,
-) -> IpcResult<SnapshotDto> {
+) -> IpcResult<MutationResultDto> {
     let mut monitor = state.monitor()?;
     monitor.set_source_selected(SourceId::new(source_id), selected)?;
+    state.sync_ports(&mut monitor);
     state.pump.discard_pending();
     state.persist(&monitor)?;
-    Ok(SnapshotDto::from_monitor(&monitor))
+    Ok(MutationResultDto {
+        snapshot: SnapshotDto::from_monitor(&monitor),
+        catalogue: catalogue(&monitor),
+    })
 }
 
 /// Applies one selection state to every source in a group.
@@ -95,13 +118,17 @@ pub fn set_group_selected(
     state: State<'_, AppState>,
     group_id: String,
     selected: bool,
-) -> IpcResult<SnapshotDto> {
+) -> IpcResult<MutationResultDto> {
     let group = parse_group(&group_id)?;
     let mut monitor = state.monitor()?;
     monitor.set_group_selected(group, selected);
+    state.sync_ports(&mut monitor);
     state.pump.discard_pending();
     state.persist(&monitor)?;
-    Ok(SnapshotDto::from_monitor(&monitor))
+    Ok(MutationResultDto {
+        snapshot: SnapshotDto::from_monitor(&monitor),
+        catalogue: catalogue(&monitor),
+    })
 }
 
 /// Replaces the message-kind and channel filter.

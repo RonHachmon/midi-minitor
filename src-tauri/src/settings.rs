@@ -67,6 +67,12 @@ impl SettingsRepository for StoreSettingsRepository {
         // A settings document this build cannot read is treated as absent rather
         // than fatal: an older or newer file on disk must never stop the
         // application from starting, and defaults are always a valid state.
+        //
+        // This rule earns its keep at exactly one known boundary: selections used
+        // to be stored as bare session ids and are now stored by device identity.
+        // Those old ids named simulated sources that no longer exist, so there is
+        // nothing worth migrating — falling back to a first run is both the
+        // simplest and the most honest outcome.
         Ok(serde_json::from_value(value).ok())
     }
 }

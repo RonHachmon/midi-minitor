@@ -2,23 +2,34 @@
 //!
 //! # Why the monitor sits behind a mutex here rather than owning a thread
 //!
-//! Three parties touch it: the simulator's generation thread ingesting events,
-//! the command handlers responding to the user, and the pump reading what to
-//! send. A mutex is the smallest thing that serialises them. An actor with a
-//! message queue would be the ceremony the project's principles reject — there
-//! is one shared structure and no ordering requirement beyond mutual exclusion.
+//! Several parties touch it: the MIDI callback threads ingesting events, the
+//! command handlers responding to the user, the pump reading what to send, and
+//! the hot-plug path replacing the catalogue. A mutex is the smallest thing that
+//! serialises them. An actor with a message queue would be the ceremony the
+//! project's principles reject — there is one shared structure and no ordering
+//! requirement beyond mutual exclusion.
 
 use crate::error::{IpcError, IpcResult};
-use crate::stream::EventPump;
+use crate::stream::{CataloguePump, EventPump};
 use midi_core::application::monitor::Monitor;
 use midi_core::application::ports::SettingsRepository;
+use midi_core::domain::source::Source;
+use midi_macos::CoreMidiSource;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Everything the command handlers need.
 pub struct AppState {
     monitor: Mutex<Monitor>,
-    /// The batching pump that feeds the webview's channel.
+    /// The batching pump that feeds the webview's event channel.
     pub pump: Arc<EventPump>,
+    /// The pump that pushes catalogue changes as devices come and go.
+    pub catalogue_pump: Arc<CataloguePump>,
+    /// The MIDI adapter, so selections can open and close real ports.
+    ///
+    /// Held here rather than as separate managed state because opening a port is
+    /// always a consequence of a selection change, and the two must not be able
+    /// to drift out of step.
+    source: Arc<Mutex<CoreMidiSource>>,
     settings: Arc<dyn SettingsRepository>,
 }
 
@@ -28,11 +39,15 @@ impl AppState {
     pub fn new(
         monitor: Monitor,
         pump: Arc<EventPump>,
+        catalogue_pump: Arc<CataloguePump>,
+        source: Arc<Mutex<CoreMidiSource>>,
         settings: Arc<dyn SettingsRepository>,
     ) -> Self {
         Self {
             monitor: Mutex::new(monitor),
             pump,
+            catalogue_pump,
+            source,
             settings,
         }
     }
@@ -64,5 +79,32 @@ impl AppState {
             .map_err(|error| IpcError::SettingsUnavailable {
                 detail: error.to_string(),
             })
+    }
+
+    /// Makes the open ports match the current selection.
+    ///
+    /// # Why a port that will not open is recorded rather than returned
+    ///
+    /// A device held by another application is a fact the user needs to see in
+    /// the Sources panel, next to the row it concerns. Returning it as a command
+    /// error would surface it as a rejected call with nowhere sensible to render
+    /// it — and would imply the whole operation failed, when every other device
+    /// was connected successfully.
+    pub fn sync_ports(&self, monitor: &mut Monitor) {
+        let sources: Vec<Source> = monitor.catalogue().sources().to_vec();
+        let Ok(mut source) = self.source.lock() else {
+            return;
+        };
+        let failures = source.sync_ports(&sources);
+        drop(source);
+
+        for (id, detail) in failures {
+            monitor.catalogue_mut().set_unopenable(id, detail);
+        }
+    }
+
+    /// Pushes the current catalogue to the webview.
+    pub fn publish_catalogue(&self, monitor: &Monitor) {
+        self.catalogue_pump.send(crate::dto::catalogue(monitor));
     }
 }

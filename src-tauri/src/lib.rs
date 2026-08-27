@@ -8,16 +8,30 @@
 //! `midi-core`, which does not depend on Tauri and therefore cannot be dragged
 //! into presentation concerns.
 //!
-//! # Wiring, in order
+//! # Wiring, in order — and the order matters
 //!
 //! 1. Restore saved settings, or fall back to first-run defaults.
-//! 2. Build the [`Monitor`] over the source catalogue the event source reports.
-//! 3. Start the batching pump that feeds the webview's channel.
-//! 4. Start the event source, whose sink ingests into the monitor and queues
-//!    whatever survives the filter.
+//! 2. **Start the MIDI adapter**, which creates the process's first CoreMIDI
+//!    client. This must happen on the main thread and before any other MIDI work:
+//!    macOS binds notification delivery to the thread and run loop current when
+//!    the first client is created. Getting this wrong breaks device hot-plug
+//!    *silently* — no error, notifications simply never arrive.
+//! 3. Build the [`Monitor`] over the catalogue the adapter reports.
+//! 4. Start the batching pump that feeds the webview's channel.
+//! 5. Open ports for whatever the restored settings had selected.
 //!
-//! Step 4 is the only place that names the simulator. Swapping in real MIDI input
-//! is a change to that one line.
+//! # What the port seam did and did not absorb
+//!
+//! An earlier version of this file claimed that swapping in real MIDI input would
+//! be "a change to that one line". That was half right, and the half it got wrong
+//! is worth recording. The **event path** did survive untouched: the wire types,
+//! the filters, the log, retention, and every command below are the same code that
+//! served generated traffic.
+//!
+//! What the seam could not absorb was an assumption underneath it — that the set
+//! of sources never changes. Real devices are plugged and unplugged, so the port
+//! grew a catalogue channel and the domain's catalogue became mutable. Honest
+//! layering bought a great deal here; it did not buy a one-line swap.
 
 pub mod commands;
 pub mod dto;
@@ -27,15 +41,15 @@ pub mod state;
 pub mod stream;
 
 use midi_core::application::monitor::Monitor;
-use midi_core::application::ports::{Clock, EventSource, SettingsRepository};
-use midi_core::simulator::SimulatedSource;
-use std::sync::Arc;
+use midi_core::application::ports::{Clock, EventSource, MidiSystemStatus, SettingsRepository};
+use midi_macos::CoreMidiSource;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 use crate::dto::EventDto;
 use crate::settings::{StoreSettingsRepository, SystemClock};
 use crate::state::AppState;
-use crate::stream::EventPump;
+use crate::stream::{CataloguePump, EventPump};
 
 /// Builds the typed command surface and the TypeScript it generates.
 ///
@@ -49,6 +63,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![
             commands::get_catalogue,
+            commands::subscribe_catalogue,
             commands::get_filter_model,
             commands::get_columns,
             commands::snapshot,
@@ -96,59 +111,84 @@ pub fn run() {
 
             let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
-            // The one line that names the simulator. A real MIDI adapter would
-            // be substituted here and nothing below would change.
-            let mut source = SimulatedSource::new(Arc::clone(&clock));
-            let catalogue = source.catalogue();
+            // The one line that names the platform adapter.
+            let mut source = CoreMidiSource::new(Arc::clone(&clock));
 
-            let monitor = Monitor::new(catalogue, saved);
+            let event_handle = handle.clone();
+            let catalogue_handle = handle.clone();
+
+            // MUST come before any other MIDI call — see the module docs. This is
+            // where the first CoreMIDI client is created, and macOS decides here
+            // and only here which run loop will carry hot-plug notifications.
+            let status = match source.start(
+                Box::new(move |event| {
+                    // Runs on a MIDI callback thread. Ingest decides whether the
+                    // event is retained and whether it is currently visible; only
+                    // visible events are queued, so suppressed traffic never
+                    // crosses the IPC boundary at all.
+                    let state = event_handle.state::<AppState>();
+                    let Ok(mut monitor) = state.monitor() else {
+                        return;
+                    };
+                    if let Some(visible) = monitor.ingest(event) {
+                        let dto = EventDto::from_event(&visible, monitor.catalogue());
+                        // The lock is released before queuing so the pump's flush
+                        // thread never waits on a MIDI callback.
+                        drop(monitor);
+                        state.pump.push(dto);
+                    }
+                }),
+                Box::new(move |sources| {
+                    // A device was attached or removed. Replace the catalogue,
+                    // make the open ports match, and tell the webview. Retained
+                    // events are deliberately left alone: what was observed does
+                    // not stop being true because a cable moved.
+                    let state = catalogue_handle.state::<AppState>();
+                    let Ok(mut monitor) = state.monitor() else {
+                        return;
+                    };
+                    monitor.replace_catalogue(sources);
+                    state.sync_ports(&mut monitor);
+                    state.publish_catalogue(&monitor);
+                }),
+            ) {
+                Ok(()) => MidiSystemStatus::Available,
+                // Not fatal. The window opens, says it cannot reach the MIDI
+                // system, and every other control keeps working — which is a far
+                // more useful failure than refusing to launch.
+                Err(error) => MidiSystemStatus::Unavailable {
+                    detail: error.to_string(),
+                },
+            };
+
+            let catalogue = source.catalogue();
+            let monitor = Monitor::new(catalogue, saved, status);
+
             let pump = Arc::new(EventPump::new());
             pump.start();
+            let catalogue_pump = Arc::new(CataloguePump::new());
+            let source = Arc::new(Mutex::new(source));
 
-            // Registered before the source starts, and registered as `AppState`
-            // rather than `Arc<AppState>`: Tauri resolves managed state by exact
-            // type, so wrapping it here would leave every `State<AppState>`
-            // parameter unresolvable at runtime.
-            app.manage(AppState::new(monitor, Arc::clone(&pump), repository));
+            // Registered as `AppState` rather than `Arc<AppState>`: Tauri resolves
+            // managed state by exact type, so wrapping it here would leave every
+            // `State<AppState>` parameter unresolvable at runtime.
+            app.manage(AppState::new(
+                monitor,
+                Arc::clone(&pump),
+                Arc::clone(&catalogue_pump),
+                Arc::clone(&source),
+                repository,
+            ));
 
-            let sink_handle = handle.clone();
-            source.start(Box::new(move |event| {
-                // Runs on the generator's thread. Ingest decides whether the
-                // event is retained and whether it is currently visible; only
-                // visible events are queued, so suppressed traffic never
-                // crosses the IPC boundary at all.
-                let state = sink_handle.state::<AppState>();
-                let Ok(mut monitor) = state.monitor() else {
-                    return;
-                };
-                if let Some(visible) = monitor.ingest(event) {
-                    let dto = EventDto::from_event(&visible, monitor.catalogue());
-                    // The lock is released before queuing so the pump's flush
-                    // thread never waits on the generator.
-                    drop(monitor);
-                    state.pump.push(dto);
-                }
-            }))?;
-
-            // The source is kept alive for the process lifetime; dropping it
-            // would stop generation on the next statement.
-            app.manage(SourceHandle(source));
+            // Open ports for whatever the restored settings had selected. Done
+            // after `manage` because it needs the state the callbacks resolve.
+            let state = handle.state::<AppState>();
+            if let Ok(mut monitor) = state.monitor() {
+                state.sync_ports(&mut monitor);
+            }
 
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// Keeps the event source alive and stops it when the application exits.
-///
-/// Tauri's managed state is the only thing with the right lifetime here; without
-/// it the source would be dropped at the end of `setup` and generation would
-/// stop before the window appeared.
-struct SourceHandle(SimulatedSource);
-
-impl Drop for SourceHandle {
-    fn drop(&mut self) {
-        self.0.stop();
-    }
 }

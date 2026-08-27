@@ -15,6 +15,7 @@
 //! boundary would put a domain rule in the webview and duplicate it.
 
 use midi_core::application::monitor::Monitor;
+use midi_core::application::ports::MidiSystemStatus;
 use midi_core::domain::column::Column;
 use midi_core::domain::event::MidiEvent;
 use midi_core::domain::filter::{ChannelMode, PrefixMode};
@@ -100,10 +101,18 @@ impl From<CheckState> for CheckStateDto {
 pub struct SourceDto {
     /// Identity — what selection keys on, since names can repeat.
     pub id: u32,
-    /// The name shown in the list.
+    /// The name shown in the list, exactly as the operating system supplies it.
     pub name: String,
     /// Whether events from it are admitted.
     pub selected: bool,
+    /// Why this source cannot currently deliver, or `null` when it can.
+    ///
+    /// # Why a reason rather than a flag
+    ///
+    /// An unavailable row with nothing to say is a state the panel would have no
+    /// way to render usefully. Carrying the explanation makes "unavailable and
+    /// unexplained" unrepresentable.
+    pub unavailable: Option<String>,
 }
 
 /// A group heading and its indented members.
@@ -118,6 +127,76 @@ pub struct SourceGroupDto {
     pub state: CheckStateDto,
     /// The sources beneath this heading, in display order.
     pub sources: Vec<SourceDto>,
+    /// Why this group has no members, or `null` when it is an ordinary group.
+    ///
+    /// Carries the deferred `Spy on output to destinations` group. The group stays
+    /// on screen because the reference screenshots are the design authority and a
+    /// control they depict may not be removed — but it may explain what it cannot
+    /// yet do, rather than sitting there looking broken.
+    pub unavailable_reason: Option<String>,
+}
+
+/// Whether the platform's MIDI system could be reached.
+///
+/// # Why this is a tagged union and not a nullable string
+///
+/// `detail: string | null` would allow a reason to be present while the system is
+/// fine, and would make "available" indistinguishable from "unavailable, no
+/// reason given". Neither state should be spellable.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+pub enum MidiSystemStatusDto {
+    /// Reached. The catalogue is trustworthy, empty or not.
+    Available,
+    /// Not reached, and this is why.
+    Unavailable {
+        /// What the platform reported.
+        detail: String,
+    },
+}
+
+impl From<&MidiSystemStatus> for MidiSystemStatusDto {
+    fn from(status: &MidiSystemStatus) -> Self {
+        match status {
+            MidiSystemStatus::Available => Self::Available,
+            MidiSystemStatus::Unavailable { detail } => Self::Unavailable {
+                detail: detail.clone(),
+            },
+        }
+    }
+}
+
+/// The Sources panel's structure together with how it was obtained.
+///
+/// # Why the system status travels with the catalogue
+///
+/// An empty list means two completely different things depending on whether the
+/// MIDI system answered. Sending them together makes it impossible for the
+/// webview to render one without knowing the other.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogueDto {
+    /// The groups and their rows, in display order.
+    pub groups: Vec<SourceGroupDto>,
+    /// Whether the MIDI system could be reached.
+    pub midi_system: MidiSystemStatusDto,
+}
+
+/// The result of a mutation that can also change the catalogue.
+///
+/// # Why only some commands return this
+///
+/// Selecting a source can surface a port that will not open, which the snapshot
+/// has no field for. A filter or column change cannot affect the catalogue, and
+/// returning one from those would invite the webview to rebuild the Sources panel
+/// on every checkbox tick — implying a coupling that does not exist.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MutationResultDto {
+    /// The visible events and counters after the change.
+    pub snapshot: SnapshotDto,
+    /// The Sources panel after the change.
+    pub catalogue: CatalogueDto,
 }
 
 /// One filter checkbox, described by Rust so the panel cannot invent entries.
@@ -258,6 +337,24 @@ impl SnapshotDto {
     }
 }
 
+/// What the deferred `Spy on output to destinations` group says for itself.
+///
+/// Observing another application's outgoing MIDI needs privileged system support
+/// installed outside this application, which is out of scope for now. The group
+/// still appears — the screenshots are the design authority — so it explains
+/// itself instead of looking empty and broken.
+const SPY_UNAVAILABLE: &str = "Observing output to destinations is not available in this version.";
+
+/// Renders one source row.
+fn source_dto(source: &midi_core::domain::source::Source) -> SourceDto {
+    SourceDto {
+        id: source.id.get(),
+        name: source.name.clone(),
+        selected: source.selected,
+        unavailable: source.availability.reason(),
+    }
+}
+
 /// Builds the Sources panel's structure from the catalogue.
 pub fn source_groups(monitor: &Monitor) -> Vec<SourceGroupDto> {
     let catalogue = monitor.catalogue();
@@ -268,18 +365,22 @@ pub fn source_groups(monitor: &Monitor) -> Vec<SourceGroupDto> {
             .sources()
             .iter()
             .filter(|source| source.group == Some(group))
-            .map(|source| SourceDto {
-                id: source.id.get(),
-                name: source.name.clone(),
-                selected: source.selected,
-            })
+            .map(source_dto)
             .collect();
+
+        // The spy group is always emitted and always empty. Populating it with
+        // anything at all would be the fabrication this feature exists to remove.
+        let unavailable_reason = match group {
+            SourceGroupId::SpyOnOutput => Some(SPY_UNAVAILABLE.to_owned()),
+            SourceGroupId::MidiSources => None,
+        };
 
         groups.push(SourceGroupDto {
             id: Some(wire_group_id(group).to_owned()),
             label: Some(group.label().to_owned()),
             state: monitor.group_state(group).into(),
             sources,
+            unavailable_reason,
         });
 
         // The standalone row sits between the two groups in the reference
@@ -289,11 +390,7 @@ pub fn source_groups(monitor: &Monitor) -> Vec<SourceGroupDto> {
                 .sources()
                 .iter()
                 .filter(|source| source.group.is_none())
-                .map(|source| SourceDto {
-                    id: source.id.get(),
-                    name: source.name.clone(),
-                    selected: source.selected,
-                })
+                .map(source_dto)
                 .collect();
             if !standalone.is_empty() {
                 groups.push(SourceGroupDto {
@@ -301,12 +398,21 @@ pub fn source_groups(monitor: &Monitor) -> Vec<SourceGroupDto> {
                     label: None,
                     state: CheckStateDto::Unchecked,
                     sources: standalone,
+                    unavailable_reason: None,
                 });
             }
         }
     }
 
     groups
+}
+
+/// Builds the Sources panel together with the MIDI system's reachability.
+pub fn catalogue(monitor: &Monitor) -> CatalogueDto {
+    CatalogueDto {
+        groups: source_groups(monitor),
+        midi_system: monitor.status().into(),
+    }
 }
 
 /// Builds the Filter panel's structure and current state.

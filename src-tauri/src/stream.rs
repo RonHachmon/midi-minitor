@@ -17,8 +17,8 @@
 //! each — less work on both sides, and aligned with when the browser actually
 //! repaints.
 
-use crate::dto::EventDto;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::dto::{CatalogueDto, EventDto};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -35,6 +35,15 @@ pub struct EventPump {
     pending: Mutex<Vec<EventDto>>,
     channel: Mutex<Option<Channel<crate::dto::EventBatchDto>>>,
     running: AtomicBool,
+    /// Events lost because the queue could not be reached.
+    ///
+    /// # Why this is counted rather than merely tolerated
+    ///
+    /// Dropping an event under contention is the right call — stalling the MIDI
+    /// callback thread would be worse. But a monitor that loses traffic without
+    /// saying so misreports what the device sent, which is the one failure this
+    /// application cannot afford. Counting makes the loss reportable.
+    dropped: AtomicU32,
 }
 
 impl EventPump {
@@ -45,6 +54,7 @@ impl EventPump {
             pending: Mutex::new(Vec::new()),
             channel: Mutex::new(None),
             running: AtomicBool::new(false),
+            dropped: AtomicU32::new(0),
         }
     }
 
@@ -64,13 +74,23 @@ impl EventPump {
 
     /// Queues one event for the next batch.
     ///
-    /// Called from the source's thread, so it does no more than append. A lock
-    /// that cannot be taken drops the event rather than blocking the generator —
-    /// a dropped event in a monitor is a far better outcome than a stalled one.
+    /// Called from a MIDI callback thread, so it does no more than append. A lock
+    /// that cannot be taken drops the event rather than blocking that thread —
+    /// stalling MIDI delivery would back up every other device in the process.
+    ///
+    /// The drop is **counted**, not swallowed: see [`Self::dropped`].
     pub fn push(&self, event: EventDto) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.push(event);
+        } else {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// How many events were lost because the queue could not be reached.
+    #[must_use]
+    pub fn dropped(&self) -> u32 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Discards anything queued but not yet sent.
@@ -124,6 +144,63 @@ impl EventPump {
 }
 
 impl Default for EventPump {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Pushes catalogue changes to the webview as devices come and go.
+///
+/// # Why this is not folded into [`EventPump`]
+///
+/// The two carry unrelated payloads at unrelated rates. Events arrive hundreds
+/// per second and are worth batching on a frame timer; a catalogue change happens
+/// when someone physically touches a cable. Sharing one channel would force a sum
+/// type onto the hot path and make the batching interval the floor for how
+/// quickly the Sources list could react.
+///
+/// No batching here for the same reason: there is nothing to coalesce. The burst
+/// one plug event produces is already collapsed by the adapter, before it reaches
+/// this layer.
+pub struct CataloguePump {
+    channel: Mutex<Option<Channel<CatalogueDto>>>,
+}
+
+impl CataloguePump {
+    /// Creates a pump with no subscriber.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            channel: Mutex::new(None),
+        }
+    }
+
+    /// Registers the webview's channel, replacing any previous subscriber.
+    ///
+    /// Replacing rather than rejecting matters during development: a hot reload
+    /// mounts a fresh webview, and the stale channel must not keep the old one
+    /// alive.
+    pub fn subscribe(&self, channel: Channel<CatalogueDto>) {
+        if let Ok(mut slot) = self.channel.lock() {
+            *slot = Some(channel);
+        }
+    }
+
+    /// Sends a catalogue to the webview, if anyone is listening.
+    pub fn send(&self, catalogue: CatalogueDto) {
+        let Ok(slot) = self.channel.lock() else {
+            return;
+        };
+        let Some(channel) = slot.as_ref() else {
+            return;
+        };
+        // A send failure means the webview is gone — during a reload, or at
+        // shutdown. There is nobody left to report it to.
+        drop(channel.send(catalogue));
+    }
+}
+
+impl Default for CataloguePump {
     fn default() -> Self {
         Self::new()
     }

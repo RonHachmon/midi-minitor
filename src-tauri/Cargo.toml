@@ -14,6 +14,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 midi-core = { path = "../crates/midi-core" }
+# The platform adapter. This crate is the composition root, so it is the one
+# place allowed to name both the ports and the implementation behind them.
+midi-macos = { path = "../crates/midi-macos" }
 serde = { workspace = true }
 serde_json = "1"
 thiserror = { workspace = true }
