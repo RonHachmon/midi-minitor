@@ -1,0 +1,22 @@
+[package]
+name = "midi-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CoreMIDI event source: the macOS adapter behind midi-core's EventSource port."
+
+[dependencies]
+midi-core = { path = "../midi-core" }
+
+# The only place in the workspace that names a MIDI library.
+#
+# `coremidi` rather than the more portable `midir`: `midir`'s CoreMIDI backend
+# ends its packet decode loop on the first byte that does not begin a valid
+# message, discarding the rest with no callback and no error. That silently
+# removes running status and malformed input — the two things a *monitor* exists
+# to display. See specs/002-real-midi-input/research.md, decision D1.
+[target.'cfg(target_os = "macos")'.dependencies]
+coremidi = "0.9"
+
+[lints]
+workspace = true

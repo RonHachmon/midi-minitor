@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/midi-core", "src-tauri"]
+members = ["crates/midi-core", "crates/midi-macos", "src-tauri"]
 resolver = "2"
 
 [workspace.package]
@@ -11,10 +11,6 @@ rust-version = "1.77"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 specta = { version = "2.0.0-rc.22", features = ["derive"] }
-# `small_rng` is not a default feature: the generator wants a small, fast,
-# explicitly seeded PRNG rather than a cryptographic one, since reproducible
-# traffic is worth more here than unpredictability.
-rand = { version = "0.8", features = ["small_rng"] }
 
 # Warnings are errors here: with no test suite, the compiler is the only
 # regression net the project has (see the constitution's Verification Standard).
