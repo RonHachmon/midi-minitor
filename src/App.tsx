@@ -4,7 +4,7 @@ import { EventTable } from "./components/EventTable";
 import { FilterPanel } from "./components/FilterPanel";
 import { RetentionRow } from "./components/RetentionRow";
 import { SourcesPanel } from "./components/SourcesPanel";
-import { startStream } from "./ipc";
+import { startStream, subscribeCatalogue } from "./ipc";
 import { useMonitorStore } from "./store";
 
 /**
@@ -20,6 +20,12 @@ export function App() {
   const setError = useMonitorStore((state) => state.setError);
 
   useEffect(() => startStream(), []);
+
+  // Separate from the event stream: this fires when someone plugs or unplugs a
+  // device, not when a message arrives. Subscribing returns the current
+  // catalogue too, so there is no moment where the panel is subscribed but
+  // empty.
+  useEffect(() => void subscribeCatalogue(), []);
 
   return (
     <div className="flex h-full flex-col bg-(--color-chrome)">

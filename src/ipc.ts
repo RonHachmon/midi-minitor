@@ -1,6 +1,6 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "./bindings";
-import type { EventBatchDto, EventDto, IpcError } from "./bindings";
+import type { CatalogueDto, EventBatchDto, EventDto, IpcError } from "./bindings";
 import { useMonitorStore } from "./store";
 
 /**
@@ -154,14 +154,35 @@ export function startStream(): () => void {
 /** Reloads the Sources, Filter, and column structures from Rust. */
 export async function refreshPanels(): Promise<void> {
   const store = useMonitorStore.getState();
-  const [groups, filter, columns] = await Promise.all([
+  const [catalogue, filter, columns] = await Promise.all([
     run(commands.getCatalogue()),
     run(commands.getFilterModel()),
     run(commands.getColumns()),
   ]);
-  if (groups) store.setGroups(groups);
+  if (catalogue) store.applyCatalogue(catalogue);
   if (filter) store.setFilter(filter);
   if (columns) store.setColumns(columns);
+}
+
+/**
+ * Subscribes to catalogue changes so the Sources list follows the hardware.
+ *
+ * # Why this is a separate channel from the event stream
+ *
+ * The two carry unrelated payloads at unrelated rates: events arrive hundreds
+ * per second and are batched on a frame timer, while a catalogue change happens
+ * when someone physically touches a cable. Sharing one channel would make the
+ * batching interval the floor for how quickly the Sources list could react.
+ */
+export async function subscribeCatalogue(): Promise<void> {
+  const channel = new Channel<CatalogueDto>();
+  channel.onmessage = (catalogue) => {
+    useMonitorStore.getState().applyCatalogue(catalogue);
+  };
+  const initial = await run(commands.subscribeCatalogue(channel));
+  if (initial) {
+    useMonitorStore.getState().applyCatalogue(initial);
+  }
 }
 
 /** Applies a snapshot-returning command and refreshes the panels it may change. */
@@ -178,13 +199,31 @@ async function mutate(
   }
 }
 
+/**
+ * Applies a command that returns both a snapshot and a catalogue.
+ *
+ * Selecting a source can reveal that its port will not open, which the snapshot
+ * has no field for — so these two commands carry the catalogue back with them
+ * rather than requiring a second round trip to discover it.
+ */
+async function mutateWithCatalogue(
+  call: ReturnType<typeof commands.setSourceSelected>,
+): Promise<void> {
+  const result = await run(call);
+  if (result) {
+    const store = useMonitorStore.getState();
+    store.applySnapshot(result.snapshot);
+    store.applyCatalogue(result.catalogue);
+  }
+}
+
 /** Selects or deselects one source. */
 export const setSourceSelected = (id: number, selected: boolean) =>
-  mutate(commands.setSourceSelected(id, selected), true);
+  mutateWithCatalogue(commands.setSourceSelected(id, selected));
 
 /** Applies one selection state to every source in a group. */
 export const setGroupSelected = (groupId: string, selected: boolean) =>
-  mutate(commands.setGroupSelected(groupId, selected), true);
+  mutateWithCatalogue(commands.setGroupSelected(groupId, selected));
 
 /** Replaces the message-kind and channel filter. */
 export const setFilter = (

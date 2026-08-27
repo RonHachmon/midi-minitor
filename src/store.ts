@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import type {
+  CatalogueDto,
   ColumnDto,
   EventDto,
   FilterViewDto,
+  MidiSystemStatusDto,
   SnapshotDto,
   SourceGroupDto,
 } from "./bindings";
@@ -37,6 +39,14 @@ export interface MonitorState {
   highWaterMark: number | null;
   /** The Sources panel's structure. */
   groups: SourceGroupDto[];
+  /**
+   * Whether the MIDI system could be reached.
+   *
+   * Distinct from an empty `groups`: "nothing is attached" and "I cannot see
+   * what is attached" look identical in a list of zero devices, and they call
+   * for completely different responses from the user.
+   */
+  midiSystem: MidiSystemStatusDto;
   /** The Filter panel's structure and state. */
   filter: FilterViewDto | null;
   /** Every column and whether it is shown. */
@@ -48,8 +58,8 @@ export interface MonitorState {
   applySnapshot: (snapshot: SnapshotDto) => void;
   /** Appends a streamed batch, dropping stale events and trimming to the cap. */
   appendBatch: (events: EventDto[]) => void;
-  /** Stores the Sources panel structure. */
-  setGroups: (groups: SourceGroupDto[]) => void;
+  /** Stores the Sources panel structure and the MIDI system's reachability. */
+  applyCatalogue: (catalogue: CatalogueDto) => void;
   /** Stores the Filter panel structure. */
   setFilter: (filter: FilterViewDto) => void;
   /** Stores the column list. */
@@ -65,6 +75,7 @@ export const useMonitorStore = create<MonitorState>((set) => ({
   monitoring: true,
   highWaterMark: null,
   groups: [],
+  midiSystem: { type: "available" },
   filter: null,
   columns: [],
   error: null,
@@ -105,7 +116,8 @@ export const useMonitorStore = create<MonitorState>((set) => ({
       };
     }),
 
-  setGroups: (groups) => set({ groups }),
+  applyCatalogue: (catalogue) =>
+    set({ groups: catalogue.groups, midiSystem: catalogue.midiSystem }),
   setFilter: (filter) => set({ filter }),
   setColumns: (columns) => set({ columns }),
   setError: (error) => set({ error }),
