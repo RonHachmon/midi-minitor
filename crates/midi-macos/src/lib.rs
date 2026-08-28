@@ -11,9 +11,12 @@
 //! deliberately keeps apart.
 //!
 //! **Containment.** A macOS-only dependency lives behind one crate boundary, so
-//! the rest of the workspace never sees a `cfg` for it. A future cross-platform
-//! feature adds a sibling crate; it does not thread conditionals through files
-//! that have nothing to do with platform detail.
+//! the rest of the workspace never sees a `cfg` for it. This prediction has since
+//! been tested: `midi-windows` was added as a sibling crate, and the only
+//! conditional in the whole application is the one that picks between them, in
+//! `src-tauri/src/platform.rs`. What the seam did *not* absorb is recorded there
+//! and in that crate — the port was incomplete, and a second implementation is
+//! what exposed it.
 //!
 //! **Symmetry.** This crate occupies exactly the position the deleted simulator
 //! did: one implementation of [`midi_core::application::ports::EventSource`],
@@ -32,7 +35,6 @@
 #![cfg(target_os = "macos")]
 
 pub mod endpoints;
-pub mod notifications;
 pub mod source;
 
 pub use source::CoreMidiSource;

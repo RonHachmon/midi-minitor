@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  ByteFidelityDto,
   CatalogueDto,
   ColumnDto,
   EventDto,
@@ -47,6 +48,15 @@ export interface MonitorState {
    * for completely different responses from the user.
    */
   midiSystem: MidiSystemStatusDto;
+  /**
+   * How faithfully this platform reports the bytes that arrived.
+   *
+   * Reported by the platform adapter and rendered as given. The webview must
+   * never decide this for itself — a check on which operating system is running
+   * would put a platform rule on the wrong side of the IPC boundary, and would
+   * be wrong the moment a platform's behaviour changed.
+   */
+  byteFidelity: ByteFidelityDto;
   /** The Filter panel's structure and state. */
   filter: FilterViewDto | null;
   /** Every column and whether it is shown. */
@@ -76,6 +86,9 @@ export const useMonitorStore = create<MonitorState>((set) => ({
   highWaterMark: null,
   groups: [],
   midiSystem: { type: "available" },
+  // The faithful case is the safe default: it adds no claim to the interface.
+  // The first catalogue replaces it with what the adapter actually reported.
+  byteFidelity: { type: "asTransmitted" },
   filter: null,
   columns: [],
   error: null,
@@ -117,7 +130,11 @@ export const useMonitorStore = create<MonitorState>((set) => ({
     }),
 
   applyCatalogue: (catalogue) =>
-    set({ groups: catalogue.groups, midiSystem: catalogue.midiSystem }),
+    set({
+      groups: catalogue.groups,
+      midiSystem: catalogue.midiSystem,
+      byteFidelity: catalogue.byteFidelity,
+    }),
   setFilter: (filter) => set({ filter }),
   setColumns: (columns) => set({ columns }),
   setError: (error) => set({ error }),

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/midi-core", "crates/midi-macos", "src-tauri"]
+members = ["crates/midi-core", "crates/midi-macos", "crates/midi-windows", "src-tauri"]
 resolver = "2"
 
 [workspace.package]

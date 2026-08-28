@@ -15,13 +15,13 @@
 //! boundary would put a domain rule in the webview and duplicate it.
 
 use midi_core::application::monitor::Monitor;
-use midi_core::application::ports::MidiSystemStatus;
+use midi_core::application::ports::{ByteFidelity, MidiSystemStatus};
 use midi_core::domain::column::Column;
 use midi_core::domain::event::MidiEvent;
 use midi_core::domain::filter::{ChannelMode, PrefixMode};
 use midi_core::domain::ids::SourceGroupId;
 use midi_core::domain::message::{MessageCategory, MessageKind};
-use midi_core::domain::source::{CheckState, SourceCatalogue};
+use midi_core::domain::source::{Availability, CheckState, SourceCatalogue};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -105,14 +105,92 @@ pub struct SourceDto {
     pub name: String,
     /// Whether events from it are admitted.
     pub selected: bool,
-    /// Why this source cannot currently deliver, or `null` when it can.
+    /// Whether this source can currently deliver, and why not if it cannot.
     ///
-    /// # Why a reason rather than a flag
+    /// # Why a tagged union rather than a nullable reason string
     ///
-    /// An unavailable row with nothing to say is a state the panel would have no
-    /// way to render usefully. Carrying the explanation makes "unavailable and
-    /// unexplained" unrepresentable.
-    pub unavailable: Option<String>,
+    /// This used to be `unavailable: Option<String>`, which was enough while
+    /// every unavailability meant the same thing to the control. It no longer
+    /// does: a row held by another program stays **tickable**, so it starts
+    /// being monitored the moment that program lets go, while a row the platform
+    /// can never satisfy must not be tickable at all. A reason string cannot
+    /// tell those apart, and a second boolean beside it could contradict it.
+    ///
+    /// The shape follows [`MidiSystemStatusDto`], which solved the adjacent
+    /// problem the same way — this is the house pattern, not a new one.
+    pub availability: AvailabilityDto,
+}
+
+/// Whether a source can deliver, and why not if it cannot.
+///
+/// Mirrors [`Availability`] one variant for one variant, and is matched
+/// exhaustively with no catch-all arm so that a new state becomes a compile
+/// error here and a type error in the webview rather than a silent default.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+pub enum AvailabilityDto {
+    /// Attached and listening.
+    Open,
+    /// Attached, but the port could not be opened. Still tickable.
+    Unopenable {
+        /// What the operating system reported.
+        detail: String,
+    },
+    /// Remembered from a previous session and not currently attached.
+    Absent,
+    /// The platform in use cannot offer this at all. Not tickable.
+    Unsupported {
+        /// What the platform cannot do, and what the user can do instead.
+        detail: String,
+    },
+}
+
+impl From<&Availability> for AvailabilityDto {
+    fn from(availability: &Availability) -> Self {
+        match availability {
+            Availability::Open => Self::Open,
+            Availability::Unopenable { detail } => Self::Unopenable {
+                detail: detail.clone(),
+            },
+            Availability::Absent => Self::Absent,
+            Availability::Unsupported { detail } => Self::Unsupported {
+                detail: detail.clone(),
+            },
+        }
+    }
+}
+
+/// How faithfully this platform reports the bytes that arrived.
+///
+/// # Why this crosses the wire at all
+///
+/// The `Data` column must carry a standing statement on a platform that
+/// assembles messages before the application can see them, and must not carry
+/// one where it would not be true. Deciding that in the webview would put a
+/// platform check on the wrong side of the boundary; deciding it in this crate
+/// would put one in a layer that is required to hold no rules. So the adapter
+/// says, and everything above renders what it is told.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+pub enum ByteFidelityDto {
+    /// The bytes shown are the bytes the cable carried.
+    AsTransmitted,
+    /// The platform assembles messages before delivery, and says what that means.
+    Assembled {
+        /// What the platform assembles, and what it still reports exactly.
+        detail: String,
+    },
+}
+
+impl From<&ByteFidelity> for ByteFidelityDto {
+    fn from(fidelity: &ByteFidelity) -> Self {
+        match fidelity {
+            ByteFidelity::AsTransmitted => Self::AsTransmitted,
+            ByteFidelity::Assembled { detail } => Self::Assembled {
+                detail: detail.clone(),
+            },
+        }
+    }
 }
 
 /// A group heading and its indented members.
@@ -180,6 +258,13 @@ pub struct CatalogueDto {
     pub groups: Vec<SourceGroupDto>,
     /// Whether the MIDI system could be reached.
     pub midi_system: MidiSystemStatusDto,
+    /// How faithfully this platform reports the bytes that arrived.
+    ///
+    /// Travels with the catalogue rather than with each event because it is a
+    /// standing fact about the machine, identical for every row — attaching it
+    /// per event would repeat one sentence a hundred thousand times and invite a
+    /// reader to think it varied.
+    pub byte_fidelity: ByteFidelityDto,
 }
 
 /// The result of a mutation that can also change the catalogue.
@@ -351,7 +436,7 @@ fn source_dto(source: &midi_core::domain::source::Source) -> SourceDto {
         id: source.id.get(),
         name: source.name.clone(),
         selected: source.selected,
-        unavailable: source.availability.reason(),
+        availability: (&source.availability).into(),
     }
 }
 
@@ -412,6 +497,7 @@ pub fn catalogue(monitor: &Monitor) -> CatalogueDto {
     CatalogueDto {
         groups: source_groups(monitor),
         midi_system: monitor.status().into(),
+        byte_fidelity: (&monitor.capabilities().byte_fidelity).into(),
     }
 }
 

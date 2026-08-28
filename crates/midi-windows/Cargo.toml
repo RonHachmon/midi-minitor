@@ -1,0 +1,33 @@
+[package]
+name = "midi-windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "WinMM event source: the Windows adapter behind midi-core's EventSource port."
+
+[dependencies]
+midi-core = { path = "../midi-core" }
+
+# The only place in the workspace that names a Windows MIDI API.
+#
+# `windows` — Microsoft's own generated bindings — rather than hand-declared
+# `extern "system"` signatures: re-deriving a published ABI by hand is exactly
+# the re-solving Principle II forbids, and a mistyped `MIDIHDR` field is a
+# silent memory bug rather than a compile error.
+#
+# Not `midir`, for the same reason `midi-macos` does not use it. Its WinMM
+# backend does not handle `MM_MIM_ERROR` at all, rejects any short message whose
+# status bit is clear, and on `MM_MIM_LONGERROR` requeues the buffer while
+# discarding the data — so malformed input, the thing a *monitor* exists to
+# show, never reaches the user. It also offers no hot-plug notification. See
+# specs/003-windows-support/research.md, decisions D1 and D4.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Multimedia",
+    "Win32_Devices_DeviceAndDriverInstallation",
+] }
+
+[lints]
+workspace = true

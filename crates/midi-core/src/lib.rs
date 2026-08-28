@@ -28,9 +28,10 @@
 //! Dependencies point inward only:
 //!
 //! ```text
-//! midi-macos (adapter) ──▶ application ──▶ domain
-//!                                ▲
-//!                                └── implemented by src-tauri (SettingsRepository)
+//! midi-macos   (adapter) ─┐
+//!                         ├─▶ application ──▶ domain
+//! midi-windows (adapter) ─┘         ▲
+//!                                   └── implemented by src-tauri (SettingsRepository)
 //! ```
 //!
 //! - [`domain`] — MIDI concepts and the rules over them, including
@@ -38,9 +39,12 @@
 //!   nothing but the standard library.
 //! - [`application`] — use cases ([`application::monitor::Monitor`]) and the
 //!   ports they need from the outside world. [`application::ports::EventSource`]
-//!   is the seam the platform adapter plugs into; this crate never names a
-//!   platform itself.
+//!   is the seam the platform adapters plug into; this crate never names a
+//!   platform itself, and the two adapters are interchangeable behind it.
+//! - [`support`] — platform-free helpers both adapters need verbatim. Reached
+//!   *from* the adapters; it reaches nothing back.
 
 pub mod application;
 pub mod constants;
 pub mod domain;
+pub mod support;

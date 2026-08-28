@@ -37,7 +37,7 @@ pub struct Source {
 /// else has the device, or the device is not here. Collapsing them into a
 /// boolean would leave the interface unable to say which.
 ///
-/// Exhaustive matching everywhere, with no catch-all arm: a fourth state must
+/// Exhaustive matching everywhere, with no catch-all arm: a fifth state must
 /// force a compile error at every site that renders one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
@@ -53,22 +53,32 @@ pub enum Availability {
     /// Listed rather than hidden so the user can see that a device they chose is
     /// missing, instead of silently wondering where its traffic went.
     Absent,
-}
-
-impl Availability {
-    /// The reason this source cannot deliver, or [`None`] when it can.
+    /// The platform in use cannot offer this capability at all.
     ///
-    /// Returns the message the interface should show rather than a flag, because
-    /// an unavailable row without an explanation is a state the Sources panel
-    /// must never have to render.
-    #[must_use]
-    pub fn reason(&self) -> Option<String> {
-        match self {
-            Self::Open => None,
-            Self::Unopenable { detail } => Some(detail.clone()),
-            Self::Absent => Some("Not connected".to_owned()),
-        }
-    }
+    /// # Why this cannot reuse [`Self::Unopenable`]
+    ///
+    /// The two call for different *controls*, not merely different text. An
+    /// `Unopenable` row stays **tickable** on purpose: a device another program
+    /// is holding right now can be pre-selected, and monitoring begins the
+    /// moment it is released. A row the platform can never satisfy must not
+    /// behave that way — ticking it would be the operable-but-inert control the
+    /// specification forbids. Collapsing the two would leave the Sources panel
+    /// unable to tell which kind of unavailability it is rendering.
+    ///
+    /// # Why a variant rather than a flag beside the existing one
+    ///
+    /// `unavailable: Option<String>` plus `selectable: bool` can disagree —
+    /// "selectable and unsupported" would be spellable and meaningless. A
+    /// variant makes that state impossible rather than merely wrong.
+    ///
+    /// This is terminal. Unlike the other three it is a property of the
+    /// platform, not of the moment, so nothing transitions out of it. Only an
+    /// adapter ever constructs it: the domain does not know what platform it is
+    /// on, and must not learn.
+    Unsupported {
+        /// What the platform cannot do and what the user can do instead.
+        detail: String,
+    },
 }
 
 /// Whether a group's checkbox is on, off, or partially on.
@@ -151,10 +161,14 @@ impl SourceCatalogue {
     /// of devices that have gone away is the caller's job, since only the caller
     /// knows what was remembered from previous sessions.
     pub fn replace(&mut self, incoming: Vec<Source>) {
+        // Cloned rather than borrowed because `self.sources` is reassigned
+        // below, which would invalidate a borrow of it. The keys outlive the
+        // list they came from for exactly one statement, and that is the cost of
+        // carrying selections across a re-enumeration.
         let previous: Vec<(SourceKey, bool)> = self
             .sources
             .iter()
-            .map(|source| (source.key, source.selected))
+            .map(|source| (source.key.clone(), source.selected))
             .collect();
 
         self.sources = incoming
@@ -185,12 +199,16 @@ impl SourceCatalogue {
     }
 
     /// The persistent identity behind a session id, if it still resolves.
+    ///
+    /// Borrowed rather than cloned: a key can now own a string, and every caller
+    /// so far only compares it. Handing out a copy would charge an allocation
+    /// for a question that never needed one.
     #[must_use]
-    pub fn key_of(&self, id: SourceId) -> Option<SourceKey> {
+    pub fn key_of(&self, id: SourceId) -> Option<&SourceKey> {
         self.sources
             .iter()
             .find(|source| source.id == id)
-            .map(|source| source.key)
+            .map(|source| &source.key)
     }
 
     /// The label the Source column shows for events from this source.
@@ -313,7 +331,7 @@ impl SourceCatalogue {
         self.sources
             .iter()
             .filter(|source| source.selected)
-            .map(|source| source.key)
+            .map(|source| source.key.clone())
             .collect()
     }
 
@@ -324,7 +342,10 @@ impl SourceCatalogue {
     /// selection should be kept or dropped.
     #[must_use]
     pub fn present_keys(&self) -> Vec<SourceKey> {
-        self.sources.iter().map(|source| source.key).collect()
+        self.sources
+            .iter()
+            .map(|source| source.key.clone())
+            .collect()
     }
 }
 

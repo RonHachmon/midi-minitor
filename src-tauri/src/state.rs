@@ -12,9 +12,8 @@
 use crate::error::{IpcError, IpcResult};
 use crate::stream::{CataloguePump, EventPump};
 use midi_core::application::monitor::Monitor;
-use midi_core::application::ports::SettingsRepository;
+use midi_core::application::ports::{EventSource, SettingsRepository};
 use midi_core::domain::source::Source;
-use midi_macos::CoreMidiSource;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Everything the command handlers need.
@@ -29,7 +28,29 @@ pub struct AppState {
     /// Held here rather than as separate managed state because opening a port is
     /// always a consequence of a selection change, and the two must not be able
     /// to drift out of step.
-    source: Arc<Mutex<CoreMidiSource>>,
+    ///
+    /// # Why the concrete adapter is not named
+    ///
+    /// This file once said `CoreMidiSource`, and called an *inherent*
+    /// `sync_ports` on it — so the shell was coupled to one platform by a method
+    /// the port did not describe, and the module docs' claim that the platform
+    /// appeared on a single line was not true. Holding the trait object makes the
+    /// claim true and makes the compiler check the contract both adapters must
+    /// meet. Which one this is remains
+    /// [`platform`](crate::platform)'s business alone.
+    ///
+    /// # Why the box, rather than `Arc<Mutex<dyn EventSource>>`
+    ///
+    /// [`crate::platform::event_source`] hands back a `Box` so its two arms can
+    /// share one return type, and the composition root drives the adapter
+    /// directly — starting it, reading its catalogue and its capabilities —
+    /// before anything else can hold it. A `Mutex<Box<dyn _>>` cannot be coerced
+    /// to a `Mutex<dyn _>` afterwards, and the alternatives all cost more than
+    /// the one pointer hop this keeps: locking the adapter for the whole startup
+    /// sequence would invent an unreachable poisoned-lock branch, and a blanket
+    /// `EventSource for Box<dyn EventSource>` would add an impl to the core crate
+    /// to save an indirection nobody can measure.
+    source: Arc<Mutex<Box<dyn EventSource>>>,
     settings: Arc<dyn SettingsRepository>,
 }
 
@@ -40,7 +61,7 @@ impl AppState {
         monitor: Monitor,
         pump: Arc<EventPump>,
         catalogue_pump: Arc<CataloguePump>,
-        source: Arc<Mutex<CoreMidiSource>>,
+        source: Arc<Mutex<Box<dyn EventSource>>>,
         settings: Arc<dyn SettingsRepository>,
     ) -> Self {
         Self {

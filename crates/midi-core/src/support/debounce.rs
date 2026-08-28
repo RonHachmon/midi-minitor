@@ -1,4 +1,4 @@
-//! Hearing about devices being plugged in and unplugged.
+//! Collapsing a burst of device-change notifications into a single rescan.
 //!
 //! # Why a debounce sits between the system and the application
 //!
@@ -11,14 +11,25 @@
 //! next to the time it takes a person to push a connector in, and well inside the
 //! two-second responsiveness the specification asks for.
 //!
-//! # The ordering constraint that is easy to break
+//! Both platform adapters need this behaviour identically, which is why it lives
+//! here rather than in either of them — see the [module docs](super) for why the
+//! alternatives were worse.
 //!
-//! macOS fixes the thread notifications are delivered on at the moment the
-//! **first** MIDI client is created, and binds delivery to the run loop current
-//! at that moment. The client carrying this callback must therefore be created on
-//! the main thread, before any other MIDI work happens. That requirement is
-//! satisfied at the call site in the application shell, and it is documented
-//! there too, because the failure mode is silent: hot-plug simply never fires.
+//! # The ordering constraint each platform imposes on its own callback
+//!
+//! This type imposes none. The *platforms* do, differently, and each adapter
+//! documents its own at the point it registers:
+//!
+//! - **macOS** fixes the thread notifications are delivered on at the moment the
+//!   first MIDI client is created, and binds delivery to the run loop current at
+//!   that moment — so that client must be created on the main thread before any
+//!   other MIDI work. The failure mode is silent: hot-plug simply never fires.
+//! - **Windows** imposes no equivalent constraint. `CM_Register_Notification`
+//!   needs no window handle and binds to no run loop.
+//!
+//! What both share is the reason [`Debouncer::schedule`] does its waiting on a
+//! thread of its own: the notification thread belongs to the system, and blocking
+//! it would stall every other notification the process receives.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -55,8 +66,8 @@ impl Debouncer {
     /// Records a notification and runs `rescan` once the burst settles.
     ///
     /// `rescan` runs on a short-lived thread rather than on the notification
-    /// thread, because that thread belongs to the system's run loop and blocking
-    /// it would stall every other MIDI notification the process receives.
+    /// thread, because that thread belongs to the system and blocking it would
+    /// stall every other notification the process receives.
     pub fn schedule<F>(&self, rescan: F)
     where
         F: FnOnce() + Send + 'static,

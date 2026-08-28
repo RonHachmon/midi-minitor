@@ -221,6 +221,26 @@ pub enum InvalidReason {
     UnknownStatus,
     /// A recognised status whose data bytes were cut short.
     TruncatedData,
+    /// The operating system itself reported these bytes as not forming a
+    /// message.
+    ///
+    /// # Why the system's verdict is its own reason
+    ///
+    /// Some platforms hand over malformed input already labelled as malformed,
+    /// rather than as a byte stream this application judges for itself. Passing
+    /// such bytes back through the decoder would let it disagree with the system
+    /// — reporting a plausible-looking message where the system saw an error —
+    /// which would be this application inventing an interpretation. The bytes
+    /// shown are the ones the system supplied, and the reason records who said
+    /// so.
+    ReportedInvalid,
+    /// The system reported invalid input but not how much of it was meaningful.
+    ///
+    /// Only the bytes whose extent could be established are shown. This exists
+    /// so the row can say the remainder was not determinable instead of padding
+    /// the display with bytes that may be nothing at all — which would be
+    /// exactly the fabrication a monitor exists to prevent.
+    ExtentUnknown,
 }
 
 impl InvalidReason {
@@ -230,6 +250,8 @@ impl InvalidReason {
         match self {
             Self::UnknownStatus => "unknown status",
             Self::TruncatedData => "truncated",
+            Self::ReportedInvalid => "reported invalid by the system",
+            Self::ExtentUnknown => "reported invalid by the system, length not determinable",
         }
     }
 }
