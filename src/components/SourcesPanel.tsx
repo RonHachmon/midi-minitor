@@ -1,3 +1,4 @@
+import type { SourceDto } from "../bindings";
 import { useState } from "react";
 import { setGroupSelected, setSourceSelected } from "../ipc";
 import { useMonitorStore } from "../store";
@@ -116,32 +117,65 @@ export function SourcesPanel() {
 }
 
 /**
- * One selectable source, with its reason for being unavailable if it has one.
+ * What a row should say and whether it can be ticked, from its availability.
  *
- * The checkbox stays operable while unavailable: a user must be able to select a
- * device that is currently held by another application, so that it starts being
- * monitored the moment it is released.
+ * # Why unavailability is not one thing
+ *
+ * Three of these four states leave the checkbox **operable**, and that is
+ * deliberate: a device another program is holding, or one that is simply not
+ * plugged in, must be selectable so that monitoring begins the moment it comes
+ * back — without the user having to notice and re-tick it.
+ *
+ * The fourth is different in kind. A capability this platform does not have will
+ * never become available, so a box that accepts the click and does nothing would
+ * be a lie the user only discovers after wasting time on it. It stays on screen,
+ * in its reference position, with its verbatim label — and says why.
+ *
+ * Matched exhaustively with no default arm, so a new availability state is a
+ * type error here rather than a row that silently renders as ordinary.
+ */
+function describe(availability: SourceDto["availability"]): {
+  reason: string | null;
+  disabled: boolean;
+} {
+  switch (availability.type) {
+    case "open":
+      return { reason: null, disabled: false };
+    case "unopenable":
+      return { reason: availability.data.detail, disabled: false };
+    case "absent":
+      return { reason: "Not connected", disabled: false };
+    case "unsupported":
+      return { reason: availability.data.detail, disabled: true };
+  }
+}
+
+/**
+ * One source row, with its reason for being unavailable if it has one.
  */
 function SourceRow({
   source,
   indent = false,
 }: {
-  source: { id: number; name: string; selected: boolean; unavailable: string | null };
+  source: SourceDto;
   indent?: boolean;
 }) {
+  const { reason, disabled } = describe(source.availability);
+
   return (
     <div>
       <TriStateCheckbox
         state={source.selected ? "checked" : "unchecked"}
         label={source.name}
+        disabled={disabled}
         {...(indent ? { indent: 2 } : {})}
         onToggle={(next) => void setSourceSelected(source.id, next)}
       />
-      {source.unavailable !== null ? (
+      {reason !== null ? (
         <p
           className={`text-(--color-ink-faint) ${indent ? "pl-10" : "pl-6"}`}
         >
-          {source.unavailable}
+          {reason}
         </p>
       ) : null}
     </div>

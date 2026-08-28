@@ -79,6 +79,7 @@ export function EventTable() {
   const columns = useMonitorStore((state) => state.columns);
   const monitoring = useMonitorStore((state) => state.monitoring);
   const retainedCount = useMonitorStore((state) => state.retainedCount);
+  const byteFidelity = useMonitorStore((state) => state.byteFidelity);
 
   const scroller = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
@@ -103,6 +104,17 @@ export function EventTable() {
   const template = visible
     .map((column) => COLUMN_WIDTH[column.id] ?? "minmax(0, 1fr)")
     .join(" ");
+
+  // The note belongs to the Data column, so it appears and disappears with it —
+  // a statement about a column nobody is looking at is clutter, and one about a
+  // column that is visible is the whole obligation.
+  //
+  // Matched exhaustively with no default arm: a platform that reports its bytes
+  // some third way must become a type error here rather than silently rendering
+  // as though it were faithful.
+  const dataVisible = visible.some((column) => column.id === "data");
+  const fidelityNote =
+    byteFidelity.type === "assembled" ? byteFidelity.data.detail : null;
 
   const onScroll = () => {
     const element = scroller.current;
@@ -141,6 +153,18 @@ export function EventTable() {
           <ColumnMenu />
         </div>
       </div>
+
+      {/*
+        A standing statement, not a per-row annotation. The application cannot
+        know which individual messages the platform assembled — it never sees the
+        original — so a per-row claim would be a fabrication. It sits under the
+        header, with the column it is about.
+      */}
+      {dataVisible && fidelityNote !== null ? (
+        <p className="shrink-0 border-b border-(--color-hairline) bg-(--color-header) px-2 py-1 text-[12px] text-(--color-ink-faint)">
+          {fidelityNote}
+        </p>
+      ) : null}
 
       <div
         ref={scroller}
