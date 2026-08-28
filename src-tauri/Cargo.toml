@@ -14,9 +14,6 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 midi-core = { path = "../crates/midi-core" }
-# The platform adapter. This crate is the composition root, so it is the one
-# place allowed to name both the ports and the implementation behind them.
-midi-macos = { path = "../crates/midi-macos" }
 serde = { workspace = true }
 serde_json = "1"
 thiserror = { workspace = true }
@@ -26,6 +23,20 @@ specta.workspace = true
 specta-typescript = "0.0.12"
 chrono = "0.4.45"
 tauri-specta = { version = "2.0.0-rc.21", features = ["derive", "typescript"] }
+
+# The platform adapters. This crate is the composition root, so it is the one
+# place allowed to name both the ports and the implementations behind them —
+# and `src/platform.rs` is the one file allowed to say which is which.
+#
+# Gated by target rather than listed unconditionally so the wrong platform's
+# adapter is never built. Without this, a Windows build would still compile the
+# CoreMIDI crate to an empty shell and a macOS build would still compile the
+# WinMM one, which is wasted work at best and a broken build at worst.
+[target.'cfg(target_os = "macos")'.dependencies]
+midi-macos = { path = "../crates/midi-macos" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+midi-windows = { path = "../crates/midi-windows" }
 
 [lints]
 workspace = true

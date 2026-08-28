@@ -11,12 +11,15 @@
 //! # Wiring, in order — and the order matters
 //!
 //! 1. Restore saved settings, or fall back to first-run defaults.
-//! 2. **Start the MIDI adapter**, which creates the process's first CoreMIDI
-//!    client. This must happen on the main thread and before any other MIDI work:
-//!    macOS binds notification delivery to the thread and run loop current when
-//!    the first client is created. Getting this wrong breaks device hot-plug
-//!    *silently* — no error, notifications simply never arrive.
-//! 3. Build the [`Monitor`] over the catalogue the adapter reports.
+//! 2. **Start the MIDI adapter**, on the main thread and before any other MIDI
+//!    work. The reason is macOS's and not every platform's, which is why it is
+//!    stated as a platform note rather than a rule: CoreMIDI binds notification
+//!    delivery to the thread and run loop current when the process's first client
+//!    is created, so creating it anywhere else breaks device hot-plug *silently*
+//!    — no error, notifications simply never arrive. The Windows adapter has no
+//!    such constraint, and honouring the stricter of the two costs nothing.
+//! 3. Build the [`Monitor`] over the catalogue the adapter reports, and over the
+//!    capabilities it declares.
 //! 4. Start the batching pump that feeds the webview's channel.
 //! 5. Open ports for whatever the restored settings had selected.
 //!
@@ -36,13 +39,13 @@
 pub mod commands;
 pub mod dto;
 pub mod error;
+pub mod platform;
 pub mod settings;
 pub mod state;
 pub mod stream;
 
 use midi_core::application::monitor::Monitor;
-use midi_core::application::ports::{Clock, EventSource, MidiSystemStatus, SettingsRepository};
-use midi_macos::CoreMidiSource;
+use midi_core::application::ports::{Clock, MidiSystemStatus, SettingsRepository};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -111,15 +114,18 @@ pub fn run() {
 
             let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
-            // The one line that names the platform adapter.
-            let mut source = CoreMidiSource::new(Arc::clone(&clock));
+            // The one call that reaches the platform adapter — and the only file
+            // on the far side of it that knows which platform this is.
+            let mut source = platform::event_source(Arc::clone(&clock));
 
             let event_handle = handle.clone();
             let catalogue_handle = handle.clone();
 
-            // MUST come before any other MIDI call — see the module docs. This is
-            // where the first CoreMIDI client is created, and macOS decides here
-            // and only here which run loop will carry hot-plug notifications.
+            // MUST come before any other MIDI call — see the module docs. On
+            // macOS this is where the first CoreMIDI client is created, and the
+            // system decides here and only here which run loop will carry
+            // hot-plug notifications. On Windows nothing depends on the calling
+            // thread, so honouring the constraint costs that platform nothing.
             let status = match source.start(
                 Box::new(move |event| {
                     // Runs on a MIDI callback thread. Ingest decides whether the
@@ -162,7 +168,10 @@ pub fn run() {
             };
 
             let catalogue = source.catalogue();
-            let monitor = Monitor::new(catalogue, saved, status);
+            // Read once, here: capabilities describe the machine this is running
+            // on and cannot change while it runs.
+            let capabilities = source.capabilities();
+            let monitor = Monitor::new(catalogue, saved, status, capabilities);
 
             let pump = Arc::new(EventPump::new());
             pump.start();
