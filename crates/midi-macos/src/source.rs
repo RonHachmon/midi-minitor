@@ -20,7 +20,7 @@
 //! give it. So it holds only what is safe to share — the id minter and the
 //! catalogue sink — and re-enumerates on its own. Enumeration needs no client, so
 //! this costs nothing. Deciding which *ports* to open and close in response stays
-//! with the owner of the adapter, through [`CoreMidiSource::sync_ports`].
+//! with the owner of the adapter, through [`EventSource::sync_ports`].
 //!
 //! # Why the decoders are held centrally
 //!
@@ -37,15 +37,17 @@ use coremidi::{
     Client, InputPort, Notification, PacketList, Source as CoreSource, VirtualDestination,
 };
 use midi_core::application::error::CoreError;
-use midi_core::application::ports::{CatalogueSink, Clock, EventSink, EventSource};
+use midi_core::application::ports::{
+    ByteFidelity, CatalogueSink, Clock, EventSink, EventSource, PlatformCapabilities,
+};
 use midi_core::domain::decoder::{Decoded, MessageDecoder};
 use midi_core::domain::event::MidiEvent;
 use midi_core::domain::ids::{EventId, SourceGroupId, SourceId, SourceKey};
 use midi_core::domain::message::{InvalidReason, MidiMessage};
 use midi_core::domain::source::{Availability, Source};
+use midi_core::support::debounce::Debouncer;
 
 use crate::endpoints;
-use crate::notifications::Debouncer;
 
 /// The name this application publishes itself under to other programs.
 ///
@@ -242,12 +244,10 @@ impl CoreMidiSource {
 
     /// Opens and closes ports so the listening set matches `sources`.
     ///
-    /// Called by the owner of this adapter when the catalogue changes, and once
-    /// at startup. Returns the sources that could not be opened, paired with the
-    /// reason, so the caller can mark those rows rather than failing outright:
-    /// one device held by another application must not stop the others being
-    /// watched.
-    pub fn sync_ports(&mut self, sources: &[Source]) -> Vec<(SourceId, String)> {
+    /// The body of [`EventSource::sync_ports`]; see the port for the contract.
+    /// Kept as an inherent helper only so the trait impl below reads as a list
+    /// of what the port asks for rather than as one long method.
+    fn sync_ports_impl(&mut self, sources: &[Source]) -> Vec<(SourceId, String)> {
         let (Some(client), Some(shared)) = (self.client.as_ref(), self.shared.as_ref()) else {
             return Vec::new();
         };
@@ -368,17 +368,6 @@ impl CoreMidiSource {
         self.virtual_destination = Some(destination);
         Ok(())
     }
-
-    /// How many events were lost because shared state could not be reached.
-    ///
-    /// Surfaced rather than kept internal: a monitor that silently loses traffic
-    /// is worse than one that admits it fell behind.
-    #[must_use]
-    pub fn dropped_events(&self) -> u32 {
-        self.shared
-            .as_ref()
-            .map_or(0, |shared| shared.dropped.load(Ordering::Relaxed))
-    }
 }
 
 /// The user-facing reason carried by a port or system error.
@@ -454,6 +443,38 @@ impl EventSource for CoreMidiSource {
 
     fn catalogue(&self) -> Vec<Source> {
         scan(&self.minter)
+    }
+
+    /// Opens and closes ports so the listening set matches `sources`.
+    ///
+    /// Returns the sources that could not be opened, paired with the reason, so
+    /// the caller can mark those rows rather than failing outright: one device
+    /// held by another application must not stop the others being watched.
+    fn sync_ports(&mut self, sources: &[Source]) -> Vec<(SourceId, String)> {
+        self.sync_ports_impl(sources)
+    }
+
+    /// CoreMIDI's MIDI 1.0 receive path delivers the packet bytes themselves.
+    ///
+    /// What the cable carried is what this adapter reports, running status
+    /// included — nothing is expanded, normalised, or reassembled before the
+    /// application sees it. That is the whole reason this crate uses the MIDI
+    /// 1.0 path rather than the MIDI 2.0 one, and it is why the `Data` column
+    /// needs no explanatory note on this platform.
+    fn capabilities(&self) -> PlatformCapabilities {
+        PlatformCapabilities {
+            byte_fidelity: ByteFidelity::AsTransmitted,
+        }
+    }
+
+    /// How many events were lost because shared state could not be reached.
+    ///
+    /// Surfaced rather than kept internal: a monitor that silently loses traffic
+    /// is worse than one that admits it fell behind.
+    fn dropped_events(&self) -> u32 {
+        self.shared
+            .as_ref()
+            .map_or(0, |shared| shared.dropped.load(Ordering::Relaxed))
     }
 }
 
