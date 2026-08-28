@@ -58,19 +58,74 @@ impl SourceId {
 ///
 /// # Why this never crosses the IPC boundary
 ///
-/// It carries a signed 32-bit value, because that is what the operating system
-/// supplies as a port's unique identifier. Sending it to the webview would put
-/// a negative number into a contract where [`SourceId`] is deliberately
-/// unsigned, and the webview has no use for it — it keys rows on [`SourceId`].
-/// Keeping this type off the wire is precisely what allows the wire type to stay
-/// simple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Its variants carry whatever shape each platform uses for a port's identity —
+/// a signed integer on one, an opaque system string on another. Sending that to
+/// the webview would put a negative number, or a path-like string, into a
+/// contract where [`SourceId`] is deliberately a small unsigned integer, and the
+/// webview has no use for either — it keys rows on [`SourceId`]. Keeping this
+/// type off the wire is precisely what allows the wire type to stay simple.
+///
+/// # Why the platforms get separate variants rather than one shared shape
+///
+/// Because no shared shape is true of both. macOS supplies a signed unique id;
+/// Windows supplies a device-interface string and no integer equivalent. Forcing
+/// one representation would make macOS stringify a number or Windows hash a
+/// string, and a hash collision restores the wrong device's selection silently.
+///
+/// Widening [`Self::Endpoint`] instead of adding a variant was rejected for a
+/// harder reason: this type is serialized into the settings file, so changing an
+/// existing variant's payload invalidates every settings file already written.
+/// Serde's externally tagged default means a *new* variant leaves existing
+/// entries deserializing exactly as before — the compatibility is structural
+/// rather than something a migration step has to get right.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SourceKey {
     /// A real endpoint, keyed on the identifier the operating system assigns it.
     ///
     /// Signed because the platform's unique-id property is signed, and sparse
     /// rather than sequential — it is a handle to compare, never to count with.
     Endpoint(i32),
+
+    /// A real port, keyed on the device-interface string the system reports.
+    ///
+    /// # Why a string, when the sibling variant is an integer
+    ///
+    /// Because the platform offers nothing else that survives a quit, a replug
+    /// into a different socket, and a reboot. The enumeration index does not —
+    /// it is positional and shifts as devices come and go, so persisting it
+    /// would restore yesterday's choices onto today's numbering, which is the
+    /// exact failure this whole type exists to prevent.
+    ///
+    /// The string is opaque and is never displayed or parsed. It is compared,
+    /// nothing more. It is stored verbatim so that a human inspecting the
+    /// settings file can recognise which device a line refers to — a hashed
+    /// stand-in would be smaller and unreadable, and would trade a compile-time
+    /// convenience for a silent runtime lie when two hashes collide.
+    ///
+    /// A platform that reports no interface string for a port cannot form this
+    /// key at all; the name-matching fallback that covers it is the caller's
+    /// responsibility, not this type's.
+    DeviceInterface(String),
+
+    /// A real port that the system offers no identity for beyond its name.
+    ///
+    /// # Why this is a variant and not a `DeviceInterface` holding a name
+    ///
+    /// Because it is not one. A device-interface string is an identity the
+    /// system guarantees; a display name is a label two ports can share. Storing
+    /// a name in the variant that promises stability would make the settings
+    /// file claim something untrue, and would leave nothing able to tell the two
+    /// cases apart — which is exactly what the weaker case needs, because it
+    /// requires different handling.
+    ///
+    /// **The weakness is the point of naming it.** When two ports present at the
+    /// same moment carry this key with the same name and nothing else separates
+    /// them, a remembered selection must be applied to *neither*, and both rows
+    /// must say so. Guessing one would silently monitor a device the user never
+    /// chose — the quiet wrong answer this whole type exists to prevent. A key
+    /// that cannot distinguish must therefore be recognisable as such, and only
+    /// a distinct variant makes it so.
+    PortName(String),
 
     /// The endpoint this application publishes for other programs to send to.
     ///

@@ -10,7 +10,7 @@
 //! business logic the Tauri layer is forbidden to hold.
 
 use super::error::CoreError;
-use super::ports::MidiSystemStatus;
+use super::ports::{MidiSystemStatus, PlatformCapabilities};
 use super::settings::PersistedSettings;
 use crate::domain::column::{Column, ColumnVisibility};
 use crate::domain::event::MidiEvent;
@@ -38,6 +38,15 @@ pub struct Monitor {
     remembered: Vec<SourceKey>,
     /// Whether the platform's MIDI system could be reached.
     status: MidiSystemStatus,
+    /// What this platform's MIDI access can and cannot do.
+    ///
+    /// # Why this is held but never persisted
+    ///
+    /// It describes the machine the application is running on *right now*.
+    /// Restoring yesterday's copy — or a copy synced from another machine —
+    /// would state a fidelity promise this machine does not make, which is
+    /// exactly the kind of untruth the rest of this type exists to prevent.
+    capabilities: PlatformCapabilities,
 }
 
 impl Monitor {
@@ -59,6 +68,7 @@ impl Monitor {
         sources: Vec<Source>,
         saved: Option<PersistedSettings>,
         status: MidiSystemStatus,
+        capabilities: PlatformCapabilities,
     ) -> Self {
         let mut catalogue = SourceCatalogue::new(sources);
         let (settings, remembered) = match saved {
@@ -81,6 +91,7 @@ impl Monitor {
             columns: settings.columns,
             remembered,
             status,
+            capabilities,
         }
     }
 
@@ -96,10 +107,12 @@ impl Monitor {
     /// in.
     pub fn replace_catalogue(&mut self, sources: Vec<Source>) {
         self.catalogue.replace(sources);
+        // Both lists are taken by value because the loop needs `&mut self`,
+        // which a borrow of either field would block for its whole duration.
         let remembered = self.remembered.clone();
-        for source in self.catalogue.present_keys() {
-            if remembered.contains(&source) {
-                self.select_by_key(source);
+        for key in self.catalogue.present_keys() {
+            if remembered.contains(&key) {
+                self.select_by_key(&key);
             }
         }
     }
@@ -115,13 +128,26 @@ impl Monitor {
         &self.status
     }
 
+    /// What this platform's MIDI access can and cannot do.
+    ///
+    /// Read-only: capabilities are reported by the adapter at construction and
+    /// never change while the process runs — the platform does not gain an
+    /// ability mid-session.
+    #[must_use]
+    pub const fn capabilities(&self) -> &PlatformCapabilities {
+        &self.capabilities
+    }
+
     /// Ticks the source carrying this key, if it is currently present.
-    fn select_by_key(&mut self, key: SourceKey) {
+    ///
+    /// Borrowed rather than taken by value: a key can own a string now, and this
+    /// only ever compares it.
+    fn select_by_key(&mut self, key: &SourceKey) {
         let ids: Vec<SourceId> = self
             .catalogue
             .sources()
             .iter()
-            .filter(|source| source.key == key)
+            .filter(|source| &source.key == key)
             .map(|source| source.id)
             .collect();
         for id in ids {

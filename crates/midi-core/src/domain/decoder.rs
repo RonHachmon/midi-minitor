@@ -350,7 +350,17 @@ fn system_common(status: u8) -> Decoded {
 }
 
 /// How many data bytes follow this status byte, or [`None`] if unrecognised.
-const fn expected_data_len(status: u8) -> Option<usize> {
+///
+/// # Why this is public
+///
+/// A platform that hands over a *packed* message rather than a byte stream —
+/// Windows delivers a short message as one doubleword — forces its adapter to
+/// decide how many of those bytes are meaningful before it can pass any of them
+/// on. That decision is this function, and it is MIDI knowledge, not platform
+/// knowledge. An adapter re-deriving it would be a second copy of the message
+/// length table with nothing forcing the two to agree.
+#[must_use]
+pub const fn expected_data_len(status: u8) -> Option<usize> {
     if status < SYSTEM_START {
         return match status & STATUS_MASK {
             0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => Some(2),
