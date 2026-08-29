@@ -9,14 +9,15 @@
 //! services would mean coordinating them from the caller, which is exactly the
 //! business logic the Tauri layer is forbidden to hold.
 
+use super::capture::CaptureState;
 use super::error::CoreError;
 use super::ports::{MidiSystemStatus, PlatformCapabilities};
 use super::settings::PersistedSettings;
 use crate::domain::column::{Column, ColumnVisibility};
 use crate::domain::event::MidiEvent;
 use crate::domain::event_log::EventLog;
-use crate::domain::filter::{DataPrefixFilter, FilterSettings};
-use crate::domain::ids::{RetentionLimit, SourceGroupId, SourceId, SourceKey};
+use crate::domain::filter::{DataPrefixRule, FilterSettings};
+use crate::domain::ids::{HexPrefix, RetentionLimit, SourceGroupId, SourceId, SourceKey};
 use crate::domain::source::{CheckState, Source, SourceCatalogue};
 
 /// Holds everything the monitor knows and answers everything the interface asks.
@@ -47,6 +48,15 @@ pub struct Monitor {
     /// would state a fidelity promise this machine does not make, which is
     /// exactly the kind of untruth the rest of this type exists to prevent.
     capabilities: PlatformCapabilities,
+    /// Whether arriving events are being taken in.
+    ///
+    /// # Why this sits beside the log rather than inside it
+    ///
+    /// The log's job is to hold what it was given under a cap. Whether something
+    /// is given to it at all is a decision about the user's current intent, and
+    /// that decision belongs here with the rest of them. Session-only: it is
+    /// deliberately absent from [`PersistedSettings`].
+    capture: CaptureState,
 }
 
 impl Monitor {
@@ -92,6 +102,7 @@ impl Monitor {
             remembered,
             status,
             capabilities,
+            capture: CaptureState::default(),
         }
     }
 
@@ -165,7 +176,22 @@ impl Monitor {
     /// filter checkbox reveal them without waiting for new traffic.
     ///
     /// Events from deselected sources are dropped entirely and never retained.
+    ///
+    /// # Why the pause check comes first
+    ///
+    /// A paused monitor retains nothing, so nothing reaches [`EventLog::push`]
+    /// and the retention cap cannot evict an event that arrived *before* the
+    /// pause. That is the whole promise of pausing: freezing only the display
+    /// would leave the cap running, and on a stream fast enough to be worth
+    /// pausing it would discard exactly the rows the user paused to read.
+    ///
+    /// Traffic that passes while paused is gone, and resuming does not backfill
+    /// it. The gap is the accepted cost of the guarantee above.
     pub fn ingest(&mut self, event: MidiEvent) -> Option<MidiEvent> {
+        match self.capture {
+            CaptureState::Paused => return None,
+            CaptureState::Running => {}
+        }
         if !self.catalogue.is_selected(event.source) {
             return None;
         }
@@ -196,6 +222,27 @@ impl Monitor {
     #[must_use]
     pub fn is_monitoring(&self) -> bool {
         self.catalogue.any_selected()
+    }
+
+    /// Whether arriving events are being taken in.
+    ///
+    /// Distinct from [`Self::is_monitoring`], and both are needed: "no source is
+    /// selected" and "the user paused" produce the same empty list and call for
+    /// completely different responses.
+    #[must_use]
+    pub const fn capture_state(&self) -> CaptureState {
+        self.capture
+    }
+
+    /// Starts or stops taking in what arrives.
+    ///
+    /// Touches nothing else. Ports stay open, selections stay as they were, the
+    /// retained log is untouched, and the retention cap keeps its meaning — a
+    /// pause must not cost the user their connection to a device, and resuming
+    /// must not have to reopen anything that could meanwhile have been taken by
+    /// another application.
+    pub const fn set_capture_state(&mut self, capture: CaptureState) {
+        self.capture = capture;
     }
 
     /// The source catalogue, for rendering the Sources panel.
@@ -288,9 +335,25 @@ impl Monitor {
         };
     }
 
-    /// Replaces the hexadecimal prefix filter.
-    pub fn set_data_prefix_filter(&mut self, data_filter: DataPrefixFilter) {
-        self.filter.data_filter = data_filter;
+    /// Adds one data prefix rule.
+    ///
+    /// # Errors
+    ///
+    /// Forwards whatever [`DataPrefixFilter::add`] refuses. On any error the
+    /// rule list is unchanged and the filter in force keeps running, which is
+    /// what stops a rejected entry from blanking the event list.
+    pub fn add_prefix_rule(&mut self, rule: DataPrefixRule) -> Result<(), CoreError> {
+        self.filter.data_filter.add(rule)
+    }
+
+    /// Removes the data prefix rule carrying this prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::UnknownPrefixRule`] when no rule carries it — an
+    /// interface working from a stale list.
+    pub fn remove_prefix_rule(&mut self, prefix: &HexPrefix) -> Result<(), CoreError> {
+        self.filter.data_filter.remove(prefix)
     }
 
     /// Replaces the retention cap, discarding excess oldest events at once.
