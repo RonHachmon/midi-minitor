@@ -39,21 +39,37 @@ function cellValue(event: EventDto, columnId: string): string {
 /**
  * Explains an empty list.
  *
- * # Why three messages rather than one
+ * # Why four messages rather than one
  *
- * An empty monitor has three quite different causes and the user's next action
- * differs for each: nothing is selected, everything is filtered out, or traffic
- * simply has not arrived yet. A single "Waiting for events…" would be actively
- * misleading in the first two — the application would look stalled when it is
- * doing exactly what it was told. `retainedCount` is what separates them: events
- * are being retained, they are just not passing the filter.
+ * An empty monitor has four quite different causes and the user's next action
+ * differs for each: nothing is selected, everything is filtered out, the monitor
+ * is paused, or traffic simply has not arrived yet. A single "Waiting for events…"
+ * would be actively misleading in the first three — the application would look
+ * stalled when it is doing exactly what it was told. `retainedCount` separates
+ * the filtered case: events are being retained, they are just not passing the
+ * filter.
+ *
+ * # Why the order is what it is
+ *
+ * Selection is checked before pause because it is the more actionable of the two:
+ * a user who resumes a monitor with no source selected still sees nothing, and
+ * would have been told the wrong thing. Pause is checked before "waiting" because
+ * while paused nothing is coming — saying otherwise would be a straightforward
+ * untruth.
  */
-function emptyReason(monitoring: boolean, retainedCount: number): string {
+function emptyReason(
+  monitoring: boolean,
+  retainedCount: number,
+  paused: boolean,
+): string {
   if (!monitoring) {
     return "No sources selected — nothing is being monitored.";
   }
   if (retainedCount > 0) {
     return `All ${retainedCount} retained events are hidden by the current filter.`;
+  }
+  if (paused) {
+    return "Paused — no events were retained before pausing.";
   }
   return "Waiting for events…";
 }
@@ -79,6 +95,7 @@ export function EventTable() {
   const columns = useMonitorStore((state) => state.columns);
   const monitoring = useMonitorStore((state) => state.monitoring);
   const retainedCount = useMonitorStore((state) => state.retainedCount);
+  const captureState = useMonitorStore((state) => state.captureState);
   const byteFidelity = useMonitorStore((state) => state.byteFidelity);
 
   const scroller = useRef<HTMLDivElement>(null);
@@ -173,7 +190,11 @@ export function EventTable() {
       >
         {events.length === 0 ? (
           <p className="px-2 py-3 text-[13px] text-(--color-ink-faint)">
-            {emptyReason(monitoring, retainedCount)}
+            {emptyReason(
+              monitoring,
+              retainedCount,
+              captureState.type === "paused",
+            )}
           </p>
         ) : (
           <div
