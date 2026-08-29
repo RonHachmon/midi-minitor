@@ -11,7 +11,8 @@
 
 use crate::application::error::CoreError;
 use crate::constants::{
-    CHANNEL_RANGE, MAX_DATA_14, MAX_DATA_BYTE, MILLIS_PER_DAY, RETENTION_LIMIT_RANGE,
+    CHANNEL_RANGE, DEFAULT_PUBLISHED_NAME, MAX_DATA_14, MAX_DATA_BYTE, MAX_PUBLISHED_NAME_LEN,
+    MAX_REQUEST_NAME_LEN, MILLIS_PER_DAY, RETENTION_LIMIT_RANGE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -431,5 +432,168 @@ impl HexPrefix {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+/// Identifies one send target for the lifetime of the process.
+///
+/// The counterpart of [`SourceId`], and separate from it for the same reason the
+/// two lists are separate: a machine's inputs and its outputs are different sets,
+/// and a number that meant one in a call about the other would be a mix-up the
+/// compiler could not see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TargetId(u32);
+
+impl TargetId {
+    /// Wraps a raw discriminator produced while scanning targets.
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The underlying discriminator, for crossing the IPC boundary.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// The identity of a send target that outlives the session.
+///
+/// # Why this splits three ways
+///
+/// It mirrors [`SourceKey`], and for the same platform reasons. CoreMIDI gives
+/// every endpoint a stable integer that survives a replug, so macOS can key on
+/// that. WinMM output devices have no such identifier — they are addressed by an
+/// index that shifts as devices come and go — so Windows must key on the name it
+/// reports. The published source is neither: it is this application's own
+/// endpoint, so its identity is a constant rather than anything the machine
+/// assigns.
+///
+/// # Why it never crosses the IPC boundary
+///
+/// The webview addresses targets by [`TargetId`], which is small and dense. This
+/// type exists to be written to disk and matched against a later scan, and
+/// sending it to the interface would invite the interface to reason about it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TargetKey {
+    /// A CoreMIDI endpoint, keyed by its stable unique identifier.
+    Endpoint(i32),
+    /// A WinMM output device, keyed by the name the platform reports.
+    DeviceName(String),
+    /// This application's own published source.
+    PublishedSource,
+}
+
+/// Identifies one entry in the session's record of sends.
+///
+/// Monotonic across the session, so a re-send names exactly the entry the user
+/// pointed at even after older entries have been evicted and the list has
+/// shifted. Keying on position would break precisely when the list is longest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SendRecordId(u32);
+
+impl SendRecordId {
+    /// Wraps a raw discriminator minted when a send is recorded.
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The underlying discriminator, for crossing the IPC boundary.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// The name of a request in the library, and its identity.
+///
+/// # Why the name is the identity
+///
+/// Names are unique across the whole library, so nothing is gained by minting an
+/// id beside them — and a great deal is lost. Keying on the name means deletion
+/// needs no index and no positional contract, and a view asking to delete
+/// something already gone gets [`CoreError::UnknownRequest`] rather than deleting
+/// whatever now sits in that position. This is the reasoning the data prefix
+/// rules already use for their prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RequestName(String);
+
+impl RequestName {
+    /// Parses and trims a user-entered request name.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::MalformedRequestName`] when the entry is empty once trimmed,
+    /// or longer than [`MAX_REQUEST_NAME_LEN`]. The caller keeps the library as
+    /// it was: a name that cannot be shown is refused rather than silently
+    /// shortened into one the user did not choose.
+    pub fn parse(entry: &str) -> Result<Self, CoreError> {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || trimmed.chars().count() > MAX_REQUEST_NAME_LEN {
+            return Err(CoreError::MalformedRequestName {
+                max: MAX_REQUEST_NAME_LEN,
+            });
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// Wraps a name this crate itself defines.
+    ///
+    /// Used only for the built-in library, whose names are literals in this
+    /// crate rather than anything a user typed, so there is nothing to validate.
+    #[must_use]
+    pub fn built_in(name: &'static str) -> Self {
+        Self(name.to_owned())
+    }
+
+    /// The name, for display and for comparison.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The name the published source carries, as other programs see it.
+///
+/// # Why this is validated and [`String`] is not enough
+///
+/// Programs that receive from this source remember their settings against this
+/// string. An empty name would give them nothing to remember, and one longer than
+/// their device lists can show would be truncated somewhere this application
+/// cannot see. Both are refused at the one place the value is built.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedName(String);
+
+impl PublishedName {
+    /// Parses and trims a user-entered publication name.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::MalformedPublicationName`] when the entry is empty once
+    /// trimmed, or longer than [`MAX_PUBLISHED_NAME_LEN`]. The caller keeps the
+    /// name already in force.
+    pub fn parse(entry: &str) -> Result<Self, CoreError> {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || trimmed.chars().count() > MAX_PUBLISHED_NAME_LEN {
+            return Err(CoreError::MalformedPublicationName {
+                max: MAX_PUBLISHED_NAME_LEN,
+            });
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// The name, for display and for the platform call that publishes it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for PublishedName {
+    /// The product name, matching what the virtual destination already uses.
+    fn default() -> Self {
+        Self(DEFAULT_PUBLISHED_NAME.to_owned())
     }
 }

@@ -58,3 +58,47 @@ pub const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 /// Passing the ceiling is reported, never silent: the transfer is listed with
 /// its **true** size so the user learns how big it actually was.
 pub const MAX_SYSEX_BYTES: usize = 65_536;
+
+/// How many sends are remembered for the send screen's record.
+///
+/// # Why there is a ceiling, and why it is this one
+///
+/// The record exists so a send that produced no reaction downstream can be told
+/// apart from a send that never happened. That question is asked about something
+/// that just happened, or happened a few minutes ago — never about the
+/// four-hundredth send of a session. A ceiling keeps a long session from growing
+/// a list nobody reads, and this one is generous enough that a user working
+/// through a mapping will still find the send they are looking for.
+pub const SEND_RECORD_LIMIT: usize = 200;
+
+/// Longest name a saved request may carry.
+///
+/// The name is the request's identity and is shown in a list beside the built-in
+/// entries, so it has to stay readable at the width that list is given. The limit
+/// is on the name, not on the description, because only the name is load-bearing.
+pub const MAX_REQUEST_NAME_LEN: usize = 64;
+
+/// Longest name the published source may carry.
+///
+/// Other applications display this string in their own device lists, at widths
+/// this application does not control, so an unbounded name would be truncated
+/// somewhere the user cannot see. The same ceiling as a request name, because
+/// both are short human labels and two different numbers would be two things to
+/// remember for no gain.
+pub const MAX_PUBLISHED_NAME_LEN: usize = 64;
+
+/// The name the published source carries until the user changes it.
+///
+/// Deliberately the same string the virtual *destination* is published under.
+/// Other programs list sources and destinations separately, so one product name
+/// appearing in both reads as one application offering two things — which is
+/// exactly what it is — rather than as two unrelated devices.
+pub const DEFAULT_PUBLISHED_NAME: &str = "MIDI Monitor";
+
+/// The Universal Non-Real Time identity request, addressed to every device.
+///
+/// `F0 7E <device> 06 01 F7` with device `7F`, meaning "all devices". This is the
+/// one built-in request that reliably provokes a reply, which is why it earns a
+/// named constant: the bytes are a fixed protocol message, not a default the user
+/// is expected to edit.
+pub const IDENTITY_REQUEST: [u8; 6] = [0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7];

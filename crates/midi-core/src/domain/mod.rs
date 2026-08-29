@@ -6,10 +6,17 @@
 //! when real device input replaced generated traffic.
 
 pub mod column;
+pub mod composition;
 pub mod decoder;
+pub mod encoder;
 pub mod event;
 pub mod event_log;
 pub mod filter;
 pub mod ids;
 pub mod message;
+pub mod publication;
+pub mod request;
+pub mod send_record;
+pub mod sendable;
 pub mod source;
+pub mod target;

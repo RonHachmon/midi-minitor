@@ -7,8 +7,9 @@
 
 use crate::application::error::CoreError;
 use crate::domain::event::MidiEvent;
-use crate::domain::ids::{SourceId, Timestamp};
+use crate::domain::ids::{PublishedName, SourceId, TargetId, Timestamp};
 use crate::domain::source::Source;
+use crate::domain::target::Target;
 
 /// Somewhere MIDI events come from.
 ///
@@ -113,6 +114,8 @@ pub trait EventSource: Send {
 /// every layer above render what it is told, with no conditional of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformCapabilities {
+    /// Whether this platform can publish a MIDI source other programs receive from.
+    pub publication: PublicationSupport,
     /// How faithfully this platform reports the bytes that arrived.
     pub byte_fidelity: ByteFidelity,
 }
@@ -230,4 +233,149 @@ pub trait SettingsRepository: Send + Sync {
 pub trait Clock: Send + Sync {
     /// The current time, as milliseconds since local midnight.
     fn now(&self) -> Timestamp;
+}
+
+/// Somewhere MIDI messages go.
+///
+/// # The problem this solves
+///
+/// The counterpart of [`EventSource`], and a separate port rather than a wider
+/// one. `EventSource` is about *arrival*: sinks, a catalogue push, and a
+/// deliberate inability to tell implementations apart. Transmission has a
+/// different shape entirely — caller-driven, synchronous, and answering per call
+/// — so folding the two together would give one trait two reasons to change.
+///
+/// It clears the bar an abstraction has to clear here: two real implementations
+/// on the day it is written, macOS and Windows, reaching the machine through
+/// entirely different platform calls. That is the same pressure that justified
+/// [`EventSource`], so it gets the same answer.
+///
+/// # What this port deliberately does not expose
+///
+/// - **No scheduling.** No timestamps, no send-at, no queue. The user presses
+///   send and the message goes; a scheduling parameter nobody has asked for is
+///   the speculative abstraction the project's principles reject.
+/// - **No fan-out.** One target per call.
+/// - **No delivery confirmation.** `Ok` means the platform accepted the bytes and
+///   nothing more. Whether a receiving program acted on them is unknowable from
+///   here, and the interface must never claim otherwise.
+pub trait Transmitter: Send {
+    /// The places this machine can currently be sent to.
+    ///
+    /// # Why this is only a snapshot
+    ///
+    /// The same reason [`EventSource::catalogue`] is: devices are attached and
+    /// removed while the application runs. The moment to re-read it is the
+    /// device-change notification delivered to the [`CatalogueSink`] given to
+    /// [`EventSource::start`] — one physical event changes both lists, and a
+    /// second subscription to the same notification would only make each adapter
+    /// guess which list a given change affected.
+    ///
+    /// Implementations MUST list every destination the operating system reports,
+    /// under the name it reports, and MUST list the published source if and only
+    /// if it is currently published.
+    fn targets(&self) -> Vec<Target>;
+
+    /// Sends `bytes` to `target`, exactly as given.
+    ///
+    /// Implementations MUST transmit the bytes unaltered — same values, same
+    /// order, nothing inserted, nothing assembled, nothing normalised. No status
+    /// byte may be re-derived and no running status applied. This promise is what
+    /// lets the interface show a user what is about to be sent.
+    ///
+    /// A message MUST be transmitted whole or not at all; an implementation that
+    /// cannot guarantee that for a given size MUST fail rather than send a
+    /// prefix.
+    ///
+    /// Reaching a destination and distributing from the published source are
+    /// different platform mechanisms. Choosing between them is the adapter's job,
+    /// because the user chose a target, not a mechanism.
+    ///
+    /// # Errors
+    ///
+    /// - [`CoreError::UnknownTarget`] when the id is not in the current snapshot,
+    ///   typically because the device has been unplugged.
+    /// - [`CoreError::TransmitFailed`] when the platform refused. The adapter
+    ///   MUST remain usable afterwards: a later send, to this target or another,
+    ///   has to work without anything being restarted.
+    fn transmit(&mut self, target: TargetId, bytes: &[u8]) -> Result<(), CoreError>;
+
+    /// Publishes a MIDI source under `name`, which other programs list among
+    /// their MIDI inputs and can receive from.
+    ///
+    /// Idempotent: publishing while already published under the same name changes
+    /// nothing. A change of name is unpublish-then-publish — the receiving
+    /// program sees one device leave and another arrive, which is exactly what
+    /// the user is warned about before it happens.
+    ///
+    /// Publishing MUST NOT disturb reception. Input ports stay open and no event
+    /// is lost; on a platform where both directions share one client, that client
+    /// MUST NOT be restarted to satisfy this call.
+    ///
+    /// # Errors
+    ///
+    /// - [`CoreError::PublicationUnsupported`] where the platform cannot publish
+    ///   at all. Callers are expected never to reach it, because the control is
+    ///   not operable there; it is a backstop against a stale view.
+    /// - [`CoreError::PublicationFailed`] where the platform can publish but this
+    ///   attempt did not succeed.
+    fn publish(&mut self, name: &PublishedName) -> Result<(), CoreError>;
+
+    /// Withdraws the published source.
+    ///
+    /// Idempotent, and infallible by design: there is no way for withdrawing an
+    /// endpoint to fail that a caller could act on, so returning a `Result` would
+    /// only invite a caller to invent a response to it.
+    fn unpublish(&mut self);
+}
+
+/// The machine's MIDI access, in both directions.
+///
+/// # Why the two ports are bundled into one object
+///
+/// This is forced by the platform rather than chosen for tidiness. On macOS a
+/// single client is the parent of every port and every virtual endpoint the
+/// application owns, and this application's client is created at one exact
+/// moment for one exact reason — inside [`EventSource::start`], on the main
+/// thread, because the operating system binds hot-plug notification delivery to
+/// whichever run loop is current at that instant and fails **silently** when it
+/// is wrong.
+///
+/// A separate transmitting object would therefore need either a second client —
+/// an avoidable risk against a constraint this codebase already documents as
+/// fragile — or the first one handed to it through the application shell, which
+/// would put a platform type in the layer that is forbidden to name a platform.
+///
+/// Windows has no such constraint; its input and output handles are independent.
+/// Honouring the stricter of the two costs that platform nothing, which is the
+/// same argument the start-order note already makes.
+pub trait MidiAccess: EventSource + Transmitter {}
+
+impl<T: EventSource + Transmitter> MidiAccess for T {}
+
+/// Whether this platform can publish a MIDI source at all.
+///
+/// # Why an enum rather than an optional message
+///
+/// The same argument [`ByteFidelity`] makes: as an `Option<String>`, support
+/// would be the *absence* of a complaint, indistinguishable from a platform that
+/// simply forgot to describe itself. "This platform can publish" is a fact worth
+/// naming. Matched exhaustively with no catch-all arm, so a third level of
+/// support becomes a compile error at every site that renders one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicationSupport {
+    /// A source can be published, and other programs will see it.
+    Supported,
+    /// This platform offers no way to publish one.
+    ///
+    /// The adapter explains the specifics in its own words, following the pattern
+    /// [`MidiSystemStatus::Unavailable`] and
+    /// [`crate::domain::source::Availability::Unsupported`] already set: the
+    /// platform speaks for itself and the domain holds no table of per-platform
+    /// prose. The detail MUST name what the user can do instead, because a
+    /// limitation stated without a way forward leaves them stuck.
+    Unsupported {
+        /// What cannot be done here, and what to do instead.
+        detail: String,
+    },
 }
