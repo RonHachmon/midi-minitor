@@ -69,6 +69,7 @@
 pub mod endpoints;
 pub mod notifications;
 pub mod receive;
+pub mod send;
 pub mod source;
 pub mod sysex;
 

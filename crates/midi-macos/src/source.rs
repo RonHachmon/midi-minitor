@@ -34,17 +34,22 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coremidi::{
-    Client, InputPort, Notification, PacketList, Source as CoreSource, VirtualDestination,
+    Client, InputPort, Notification, OutputPort, PacketBuffer, PacketList, Source as CoreSource,
+    VirtualDestination, VirtualSource,
 };
 use midi_core::application::error::CoreError;
 use midi_core::application::ports::{
     ByteFidelity, CatalogueSink, Clock, EventSink, EventSource, PlatformCapabilities,
+    PublicationSupport, Transmitter,
 };
 use midi_core::domain::decoder::{Decoded, MessageDecoder};
 use midi_core::domain::event::MidiEvent;
-use midi_core::domain::ids::{EventId, SourceGroupId, SourceId, SourceKey};
+use midi_core::domain::ids::{
+    EventId, PublishedName, SourceGroupId, SourceId, SourceKey, TargetId, TargetKey,
+};
 use midi_core::domain::message::{InvalidReason, MidiMessage};
 use midi_core::domain::source::{Availability, Source};
+use midi_core::domain::target::{Target, TargetKind};
 use midi_core::support::debounce::Debouncer;
 
 use crate::endpoints;
@@ -57,6 +62,13 @@ const VIRTUAL_DESTINATION_NAME: &str = "MIDI Monitor";
 
 /// The name given to the CoreMIDI client.
 const CLIENT_NAME: &str = "MIDI Monitor";
+
+/// The name given to the output port every destination send goes through.
+///
+/// Never shown to a user: an output port is an internal handle, not an endpoint,
+/// so no other application lists it. It is named for the benefit of anyone
+/// inspecting the MIDI system while debugging.
+const OUTPUT_PORT_NAME: &str = "MIDI Monitor Output";
 
 /// The verbatim label of the standalone row this application's own endpoint fills.
 ///
@@ -71,31 +83,56 @@ const DESTINATION_ROW_LABEL: &str = "Act as a destination for other programs";
 /// A device unplugged and replugged keeps the id it had, so the webview updates a
 /// row it already has rather than discarding and rebuilding it. Shared because
 /// both the adapter and the notification callback mint ids, and they must agree.
-#[derive(Debug, Default)]
-struct IdMinter {
-    known: Mutex<HashMap<SourceKey, SourceId>>,
+///
+/// # Why this is generic
+///
+/// Sources and targets need identical behaviour over different key and id types,
+/// and the send screen made that a second instantiation rather than a
+/// hypothetical one. Two copies of this would be two places for the poisoned-lock
+/// reasoning below to drift.
+#[derive(Debug)]
+struct IdMinter<K, I> {
+    known: Mutex<HashMap<K, I>>,
     next: AtomicU32,
+    /// How to build an id from a fresh number. A function rather than a trait
+    /// bound, because one line of construction does not earn a trait.
+    mint: fn(u32) -> I,
 }
 
-impl IdMinter {
+impl<K: Eq + std::hash::Hash, I: Copy> IdMinter<K, I> {
+    /// An empty minter that builds its ids with `mint`.
+    fn new(mint: fn(u32) -> I) -> Self {
+        Self {
+            known: Mutex::new(HashMap::new()),
+            next: AtomicU32::new(0),
+            mint,
+        }
+    }
+
     /// The id for a key, minting one the first time the key is seen.
-    fn id_for(&self, key: SourceKey) -> SourceId {
+    fn id_for(&self, key: K) -> I {
         let Ok(mut known) = self.known.lock() else {
             // Only reachable if a panic poisoned the map. A fresh id costs a row
             // re-render; refusing would drop the device from the list entirely.
-            return SourceId::new(self.next.fetch_add(1, Ordering::SeqCst) + 1);
+            return (self.mint)(self.next.fetch_add(1, Ordering::SeqCst) + 1);
         };
         if let Some(id) = known.get(&key) {
             return *id;
         }
-        let id = SourceId::new(self.next.fetch_add(1, Ordering::SeqCst) + 1);
+        let id = (self.mint)(self.next.fetch_add(1, Ordering::SeqCst) + 1);
         known.insert(key, id);
         id
     }
 }
 
+/// The minter for monitored sources.
+type SourceIdMinter = IdMinter<SourceKey, SourceId>;
+
+/// The minter for send targets.
+type TargetIdMinter = IdMinter<TargetKey, TargetId>;
+
 /// The current catalogue: real input ports, plus this application's own row.
-fn scan(minter: &IdMinter) -> Vec<Source> {
+fn scan(minter: &SourceIdMinter) -> Vec<Source> {
     let mut sources: Vec<Source> = endpoints::enumerate()
         .into_iter()
         .map(|(snapshot, _)| {
@@ -219,7 +256,16 @@ pub struct CoreMidiSource {
     shared: Option<Arc<Shared>>,
     ports: HashMap<SourceId, InputPort>,
     virtual_destination: Option<VirtualDestination>,
-    minter: Arc<IdMinter>,
+    minter: Arc<SourceIdMinter>,
+    /// Session ids for send targets, stable for the same reason source ids are.
+    target_minter: TargetIdMinter,
+    /// The one port every destination send goes through.
+    ///
+    /// Created on first use rather than at startup: an application that never
+    /// opens the send screen should not register an output port with the system.
+    output_port: Option<OutputPort>,
+    /// The source this application publishes, when publishing is on.
+    virtual_source: Option<VirtualSource>,
 }
 
 impl CoreMidiSource {
@@ -238,7 +284,10 @@ impl CoreMidiSource {
             shared: None,
             ports: HashMap::new(),
             virtual_destination: None,
-            minter: Arc::new(IdMinter::default()),
+            minter: Arc::new(SourceIdMinter::new(SourceId::new)),
+            target_minter: TargetIdMinter::new(TargetId::new),
+            output_port: None,
+            virtual_source: None,
         }
     }
 
@@ -437,6 +486,8 @@ impl EventSource for CoreMidiSource {
     fn stop(&mut self) {
         self.ports.clear();
         self.virtual_destination = None;
+        self.virtual_source = None;
+        self.output_port = None;
         self.client = None;
         self.shared = None;
     }
@@ -463,6 +514,7 @@ impl EventSource for CoreMidiSource {
     /// needs no explanatory note on this platform.
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
+            publication: PublicationSupport::Supported,
             byte_fidelity: ByteFidelity::AsTransmitted,
         }
     }
@@ -481,5 +533,159 @@ impl EventSource for CoreMidiSource {
 impl Drop for CoreMidiSource {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+impl Transmitter for CoreMidiSource {
+    /// Every destination the system reports, plus the published source when it
+    /// is published.
+    ///
+    /// Re-enumerated on each call rather than cached, exactly as
+    /// [`EventSource::catalogue`] is: this is the set at the moment of asking,
+    /// and a cached list would let the picker offer a device that has gone.
+    fn targets(&self) -> Vec<Target> {
+        let mut targets: Vec<Target> = endpoints::enumerate_destinations()
+            .into_iter()
+            .map(|(snapshot, _)| {
+                let id = self
+                    .target_minter
+                    .id_for(TargetKey::Endpoint(snapshot.unique_id));
+                snapshot.to_target(id)
+            })
+            .collect();
+
+        // Listed only while it exists. Unlike the destination row in the Sources
+        // panel — which is a capability the user switches on and is therefore
+        // always shown — this is a real endpoint, and offering it as a target
+        // while nothing is published would offer a place that is not there.
+        if let Some(source) = self.virtual_source.as_ref() {
+            targets.push(Target::new(
+                self.target_minter.id_for(TargetKey::PublishedSource),
+                TargetKey::PublishedSource,
+                source.display_name().unwrap_or_else(String::new),
+                TargetKind::PublishedSource,
+            ));
+        }
+
+        targets
+    }
+
+    /// Sends the bytes to whichever endpoint that target names.
+    ///
+    /// # The two mechanisms, and why the caller does not choose between them
+    ///
+    /// A destination is reached by *sending to* it through an output port. The
+    /// published source is reached by *distributing from* it — the application
+    /// owns that endpoint, so the call is `MIDIReceived`, which hands the bytes
+    /// to every input port connected to it. Those are different CoreMIDI
+    /// functions, but the user chose a target rather than a mechanism, so
+    /// selecting between them belongs here.
+    ///
+    /// The timestamp is zero, which CoreMIDI defines as "now". This application
+    /// sends when the user presses send and has no scheduling model to express
+    /// anything else.
+    fn transmit(&mut self, target: TargetId, bytes: &[u8]) -> Result<(), CoreError> {
+        let packets = PacketBuffer::new(0, bytes);
+
+        if self.target_minter.id_for(TargetKey::PublishedSource) == target {
+            let Some(source) = self.virtual_source.as_ref() else {
+                return Err(CoreError::UnknownTarget {
+                    name: String::new(),
+                });
+            };
+            return source
+                .received(&packets)
+                .map_err(|status| CoreError::TransmitFailed {
+                    target: source.display_name().unwrap_or_else(String::new),
+                    detail: format!("the published source rejected the message (status {status})"),
+                });
+        }
+
+        let found = endpoints::enumerate_destinations()
+            .into_iter()
+            .find(|(snapshot, _)| {
+                self.target_minter
+                    .id_for(TargetKey::Endpoint(snapshot.unique_id))
+                    == target
+            });
+        let Some((snapshot, destination)) = found else {
+            return Err(CoreError::UnknownTarget {
+                name: String::new(),
+            });
+        };
+
+        // Created on first use and kept afterwards. Opening a port per send would
+        // register and unregister with the system on every keypress.
+        if self.output_port.is_none() {
+            let Some(client) = self.client.as_ref() else {
+                return Err(CoreError::TransmitFailed {
+                    target: snapshot.display_name.clone(),
+                    detail: "the MIDI system is not running".to_owned(),
+                });
+            };
+            let port = client.output_port(OUTPUT_PORT_NAME).map_err(|status| {
+                CoreError::TransmitFailed {
+                    target: snapshot.display_name.clone(),
+                    detail: format!("an output port could not be opened (status {status})"),
+                }
+            })?;
+            self.output_port = Some(port);
+        }
+
+        let Some(port) = self.output_port.as_ref() else {
+            return Err(CoreError::TransmitFailed {
+                target: snapshot.display_name.clone(),
+                detail: "an output port could not be opened".to_owned(),
+            });
+        };
+
+        port.send(&destination, &packets)
+            .map_err(|status| CoreError::TransmitFailed {
+                target: snapshot.display_name.clone(),
+                detail: format!("the destination rejected the message (status {status})"),
+            })
+    }
+
+    /// Publishes a source under `name`, which other programs can receive from.
+    ///
+    /// Uses the same client the input ports use, which is what makes this safe to
+    /// do at any time: no client is created here, so the run loop that carries
+    /// hot-plug notifications is never rebound.
+    ///
+    /// A change of name is a withdraw and a republish, because CoreMIDI has no
+    /// rename that other applications would notice — and the user has already
+    /// been warned that the receiving program will see a new device.
+    fn publish(&mut self, name: &PublishedName) -> Result<(), CoreError> {
+        if self
+            .virtual_source
+            .as_ref()
+            .and_then(|source| source.display_name())
+            .is_some_and(|current| current == name.as_str())
+        {
+            return Ok(());
+        }
+        self.virtual_source = None;
+
+        let Some(client) = self.client.as_ref() else {
+            return Err(CoreError::PublicationFailed {
+                detail: "the MIDI system is not running".to_owned(),
+            });
+        };
+
+        let source = client.virtual_source(name.as_str()).map_err(|status| {
+            CoreError::PublicationFailed {
+                detail: format!("the source could not be created (status {status})"),
+            }
+        })?;
+        self.virtual_source = Some(source);
+        Ok(())
+    }
+
+    /// Withdraws the published source.
+    ///
+    /// Dropping the endpoint is what removes it from every other application's
+    /// list, so there is nothing else to do and nothing that can fail.
+    fn unpublish(&mut self) {
+        self.virtual_source = None;
     }
 }
