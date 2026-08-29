@@ -134,6 +134,118 @@ pub enum IpcError {
     /// a stated failure instead of a window that has quietly stopped updating.
     #[error("monitor unavailable")]
     MonitorUnavailable,
+
+    /// The composed message cannot be encoded. Unreachable through this application.
+    #[error("this message cannot be transmitted")]
+    UnsendableMessage {
+        /// Why it cannot be transmitted.
+        reason: String,
+    },
+
+    /// Hand-typed bytes are not exactly one valid MIDI message.
+    #[error("malformed send bytes")]
+    MalformedSendBytes {
+        /// The decoder's own reason, for the entry field.
+        detail: String,
+    },
+
+    /// A composition value fell outside the range its message permits.
+    #[error("value out of range")]
+    ValueOutOfRange {
+        /// The field's label.
+        field: String,
+        /// Lowest accepted value.
+        min: u16,
+        /// Highest accepted value.
+        max: u16,
+    },
+
+    /// A send was attempted with no target chosen.
+    #[error("no send target")]
+    NoSendTarget,
+
+    /// The chosen target is no longer available.
+    #[error("unknown target")]
+    UnknownTarget {
+        /// The name as last known, which may be empty for a stale identifier.
+        name: String,
+    },
+
+    /// The platform refused to transmit.
+    #[error("transmit failed")]
+    TransmitFailed {
+        /// The target's name.
+        target: String,
+        /// What the platform reported.
+        detail: String,
+    },
+
+    /// This platform cannot publish a MIDI source.
+    #[error("publication unsupported")]
+    PublicationUnsupported {
+        /// What cannot be done here, and what to do instead.
+        detail: String,
+    },
+
+    /// The platform could publish but this attempt did not succeed.
+    #[error("publication failed")]
+    PublicationFailed {
+        /// What the platform reported.
+        detail: String,
+    },
+
+    /// The publication name is empty or too long.
+    #[error("malformed publication name")]
+    MalformedPublicationName {
+        /// The accepted ceiling.
+        max: u32,
+    },
+
+    /// No request carries that name.
+    #[error("unknown request")]
+    UnknownRequest {
+        /// The name that was asked for.
+        name: String,
+    },
+
+    /// A saved request would take a name the library already holds.
+    #[error("duplicate request name")]
+    DuplicateRequestName {
+        /// The name that collided.
+        name: String,
+    },
+
+    /// A built-in request cannot be renamed or deleted.
+    #[error("built-in request is immutable")]
+    BuiltInRequestImmutable {
+        /// The built-in that was targeted.
+        name: String,
+    },
+
+    /// The request name is empty or too long.
+    #[error("malformed request name")]
+    MalformedRequestName {
+        /// The accepted ceiling.
+        max: u32,
+    },
+
+    /// The composition does not carry that field. A stale view.
+    #[error("unknown field")]
+    UnknownField {
+        /// The identifier that was asked for.
+        field: String,
+    },
+
+    /// No composable message carries that identifier. A stale view.
+    #[error("unknown message type")]
+    UnknownSendableKind {
+        /// The identifier that was asked for.
+        id: String,
+    },
+
+    /// No send record carries that identifier.
+    #[error("unknown send record")]
+    UnknownSendRecord,
 }
 
 impl From<CoreError> for IpcError {
@@ -191,6 +303,32 @@ impl From<CoreError> for IpcError {
                 detail: format!("{name}: {detail}"),
             },
             CoreError::MidiSystemUnavailable { detail } => Self::SettingsUnavailable { detail },
+
+            CoreError::UnsendableMessage { reason } => Self::UnsendableMessage { reason },
+            CoreError::MalformedSendBytes { detail } => Self::MalformedSendBytes { detail },
+            CoreError::ValueOutOfRange { field, min, max } => {
+                Self::ValueOutOfRange { field, min, max }
+            }
+            CoreError::NoSendTarget => Self::NoSendTarget,
+            CoreError::UnknownTarget { name } => Self::UnknownTarget { name },
+            CoreError::TransmitFailed { target, detail } => Self::TransmitFailed { target, detail },
+            CoreError::PublicationUnsupported { detail } => Self::PublicationUnsupported { detail },
+            CoreError::PublicationFailed { detail } => Self::PublicationFailed { detail },
+            // Widths differ across the boundary for the same reason the retention
+            // limit's does: a length ceiling never approaches what a JavaScript
+            // number cannot carry, and saturating states that rather than casting.
+            CoreError::MalformedPublicationName { max } => Self::MalformedPublicationName {
+                max: u32::try_from(max).unwrap_or(u32::MAX),
+            },
+            CoreError::UnknownRequest { name } => Self::UnknownRequest { name },
+            CoreError::DuplicateRequestName { name } => Self::DuplicateRequestName { name },
+            CoreError::BuiltInRequestImmutable { name } => Self::BuiltInRequestImmutable { name },
+            CoreError::MalformedRequestName { max } => Self::MalformedRequestName {
+                max: u32::try_from(max).unwrap_or(u32::MAX),
+            },
+            CoreError::UnknownField { field } => Self::UnknownField { field },
+            CoreError::UnknownSendableKind { id } => Self::UnknownSendableKind { id },
+            CoreError::UnknownSendRecord => Self::UnknownSendRecord,
         }
     }
 }

@@ -46,13 +46,14 @@ pub mod stream;
 
 use midi_core::application::monitor::Monitor;
 use midi_core::application::ports::{Clock, MidiSystemStatus, SettingsRepository};
+use midi_core::application::sender::Sender;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 use crate::dto::EventDto;
 use crate::settings::{StoreSettingsRepository, SystemClock};
-use crate::state::AppState;
-use crate::stream::{CataloguePump, EventPump};
+use crate::state::{AppState, Pumps};
+use crate::stream::{CataloguePump, EventPump, TargetPump};
 
 /// Builds the typed command surface and the TypeScript it generates.
 ///
@@ -80,6 +81,20 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             commands::set_retention_limit,
             commands::clear_events,
             commands::set_column_visibility,
+            commands::get_send_view,
+            commands::subscribe_send_targets,
+            commands::set_send_target,
+            commands::select_request,
+            commands::set_composition_kind,
+            commands::set_composition_field,
+            commands::compose_raw,
+            commands::send,
+            commands::resend,
+            commands::set_publication_name,
+            commands::set_publication_enabled,
+            commands::save_request,
+            commands::rename_request,
+            commands::delete_request,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }
@@ -118,7 +133,7 @@ pub fn run() {
 
             // The one call that reaches the platform adapter — and the only file
             // on the far side of it that knows which platform this is.
-            let mut source = platform::event_source(Arc::clone(&clock));
+            let mut source = platform::midi_access(Arc::clone(&clock));
 
             let event_handle = handle.clone();
             let catalogue_handle = handle.clone();
@@ -158,6 +173,11 @@ pub fn run() {
                     monitor.replace_catalogue(sources);
                     state.sync_ports(&mut monitor);
                     state.publish_catalogue(&monitor);
+                    drop(monitor);
+                    // One cable moved changes both lists. Re-reading the targets
+                    // here is what keeps the send screen honest without a second
+                    // subscription to the same notification.
+                    state.refresh_targets();
                 }),
             ) {
                 Ok(()) => MidiSystemStatus::Available,
@@ -173,11 +193,21 @@ pub fn run() {
             // Read once, here: capabilities describe the machine this is running
             // on and cannot change while it runs.
             let capabilities = source.capabilities();
+            // The send side is built from the same three ingredients as the
+            // monitor: what the machine reports now, what was saved last time, and
+            // what this platform can do. Reading the targets here rather than
+            // later means the send screen is correct the first time it is opened,
+            // with no separate warm-up path to get wrong.
+            //
+            // Built before the monitor only because the monitor takes ownership of
+            // the saved settings and this needs to borrow them first.
+            let sender = Sender::new(source.targets(), saved.as_ref(), capabilities.clone());
             let monitor = Monitor::new(catalogue, saved, status, capabilities);
 
             let pump = Arc::new(EventPump::new());
             pump.start();
             let catalogue_pump = Arc::new(CataloguePump::new());
+            let target_pump = Arc::new(TargetPump::new());
             let source = Arc::new(Mutex::new(source));
 
             // Registered as `AppState` rather than `Arc<AppState>`: Tauri resolves
@@ -185,10 +215,15 @@ pub fn run() {
             // `State<AppState>` parameter unresolvable at runtime.
             app.manage(AppState::new(
                 monitor,
-                Arc::clone(&pump),
-                Arc::clone(&catalogue_pump),
+                sender,
+                Pumps {
+                    events: Arc::clone(&pump),
+                    catalogue: Arc::clone(&catalogue_pump),
+                    targets: Arc::clone(&target_pump),
+                },
                 Arc::clone(&source),
                 repository,
+                Arc::clone(&clock),
             ));
 
             // Open ports for whatever the restored settings had selected. Done
@@ -196,6 +231,20 @@ pub fn run() {
             let state = handle.state::<AppState>();
             if let Ok(mut monitor) = state.monitor() {
                 state.sync_ports(&mut monitor);
+            }
+
+            // Republish the source if the user left the disguise on. A saved
+            // `published: true` is a *request*, not a guarantee — the platform has
+            // the final say, and a refusal must not stop the window opening. So
+            // the failure is recorded against the sender's own state and the
+            // screen reports it, rather than being raised here where there is
+            // nobody to tell.
+            if let Ok(mut sender) = state.sender() {
+                if sender.publication().published {
+                    if let Err(error) = state.apply_publication(&sender) {
+                        sender.report_publication_failure(&error.to_string());
+                    }
+                }
             }
 
             Ok(())

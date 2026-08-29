@@ -16,12 +16,17 @@ use crate::dto::{
     catalogue, columns, filter_view, CaptureStateDto, CatalogueDto, ChannelModeDto, ColumnDto,
     EventBatchDto, FilterViewDto, MutationResultDto, PrefixModeDto, SnapshotDto,
 };
+use crate::dto::{send_view, targets, SendViewDto, TargetsDto};
 use crate::error::{IpcError, IpcResult};
 use crate::state::AppState;
 use midi_core::domain::column::Column;
 use midi_core::domain::filter::{ChannelMode, DataPrefixFilter, DataPrefixRule, FilterSettings};
-use midi_core::domain::ids::{ChannelNumber, HexPrefix, RetentionLimit, SourceGroupId, SourceId};
+use midi_core::domain::ids::{
+    ChannelNumber, HexPrefix, RequestName, RetentionLimit, SourceGroupId, SourceId, TargetId,
+};
+use midi_core::domain::ids::{PublishedName, SendRecordId};
 use midi_core::domain::message::MessageKind;
+use midi_core::domain::sendable::{FieldId, SendableKind};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -104,7 +109,8 @@ pub fn set_source_selected(
     monitor.set_source_selected(SourceId::new(source_id), selected)?;
     state.sync_ports(&mut monitor);
     state.pump.discard_pending();
-    state.persist(&monitor)?;
+    let sender = state.sender()?;
+    state.persist(&monitor, &sender)?;
     Ok(MutationResultDto {
         snapshot: SnapshotDto::from_monitor(&monitor),
         catalogue: catalogue(&monitor),
@@ -124,7 +130,8 @@ pub fn set_group_selected(
     monitor.set_group_selected(group, selected);
     state.sync_ports(&mut monitor);
     state.pump.discard_pending();
-    state.persist(&monitor)?;
+    let sender = state.sender()?;
+    state.persist(&monitor, &sender)?;
     Ok(MutationResultDto {
         snapshot: SnapshotDto::from_monitor(&monitor),
         catalogue: catalogue(&monitor),
@@ -161,7 +168,8 @@ pub fn set_filter(
         data_filter: DataPrefixFilter::default(),
     });
     state.pump.discard_pending();
-    state.persist(&monitor)?;
+    let sender = state.sender()?;
+    state.persist(&monitor, &sender)?;
     Ok(SnapshotDto::from_monitor(&monitor))
 }
 
@@ -184,7 +192,8 @@ pub fn add_data_prefix_rule(
     let mut monitor = state.monitor()?;
     monitor.add_prefix_rule(DataPrefixRule::new(prefix, kind.into()))?;
     state.pump.discard_pending();
-    state.persist(&monitor)?;
+    let sender = state.sender()?;
+    state.persist(&monitor, &sender)?;
     Ok(SnapshotDto::from_monitor(&monitor))
 }
 
@@ -210,7 +219,8 @@ pub fn remove_data_prefix_rule(
     let mut monitor = state.monitor()?;
     monitor.remove_prefix_rule(&prefix)?;
     state.pump.discard_pending();
-    state.persist(&monitor)?;
+    let sender = state.sender()?;
+    state.persist(&monitor, &sender)?;
     Ok(SnapshotDto::from_monitor(&monitor))
 }
 
@@ -221,7 +231,8 @@ pub fn set_retention_limit(state: State<'_, AppState>, limit: u32) -> IpcResult<
     let limit = RetentionLimit::new(limit as usize)?;
     let mut monitor = state.monitor()?;
     monitor.set_retention(limit);
-    state.persist(&monitor)?;
+    let sender = state.sender()?;
+    state.persist(&monitor, &sender)?;
     Ok(SnapshotDto::from_monitor(&monitor))
 }
 
@@ -282,7 +293,8 @@ pub fn set_column_visibility(
 
     let mut monitor = state.monitor()?;
     monitor.set_columns(&visible)?;
-    state.persist(&monitor)?;
+    let sender = state.sender()?;
+    state.persist(&monitor, &sender)?;
     Ok(columns(&monitor))
 }
 
@@ -295,4 +307,218 @@ fn parse_group(id: &str) -> IpcResult<SourceGroupId> {
         Some(group) => Ok(group),
         None => Err(IpcError::UnknownGroup { id: id.to_owned() }),
     }
+}
+
+/// The whole send screen model.
+///
+/// Read once when the screen mounts. Every mutating send command returns the same
+/// shape, so the screen replaces its model rather than patching it.
+#[tauri::command]
+#[specta::specta]
+pub fn get_send_view(state: State<'_, AppState>) -> IpcResult<SendViewDto> {
+    let sender = state.sender()?;
+    Ok(send_view(&sender))
+}
+
+/// Subscribes to target-list changes and returns the list as it stands.
+///
+/// Returning the current list matters: without it there is a moment where the
+/// screen is subscribed and empty, and the user sees no targets on a machine that
+/// has them.
+#[tauri::command]
+#[specta::specta]
+pub fn subscribe_send_targets(
+    state: State<'_, AppState>,
+    channel: Channel<TargetsDto>,
+) -> IpcResult<TargetsDto> {
+    state.target_pump.subscribe(channel);
+    let sender = state.sender()?;
+    Ok(targets(&sender))
+}
+
+/// Chooses where traffic goes.
+///
+/// Persisted by the identity that outlives the session, so the choice comes back
+/// after a replug and on the next launch.
+#[tauri::command]
+#[specta::specta]
+pub fn set_send_target(state: State<'_, AppState>, target_id: u32) -> IpcResult<SendViewDto> {
+    let monitor = state.monitor()?;
+    let mut sender = state.sender()?;
+    sender.set_target(TargetId::new(target_id))?;
+    state.persist(&monitor, &sender)?;
+    Ok(send_view(&sender))
+}
+
+/// Loads a request into the composition, ready to send or adjust.
+#[tauri::command]
+#[specta::specta]
+pub fn select_request(state: State<'_, AppState>, name: String) -> IpcResult<SendViewDto> {
+    let mut sender = state.sender()?;
+    sender.select_request(&RequestName::parse(&name)?)?;
+    Ok(send_view(&sender))
+}
+
+/// Sets one value on the message being composed.
+///
+/// The returned preview is the re-encoded byte string, which is what makes "what
+/// you see is what is sent" one value rather than two that have to agree.
+#[tauri::command]
+#[specta::specta]
+pub fn set_composition_field(
+    state: State<'_, AppState>,
+    field_id: String,
+    value: String,
+) -> IpcResult<SendViewDto> {
+    let field = FieldId::from_id(&field_id).ok_or(IpcError::UnknownField { field: field_id })?;
+    let mut sender = state.sender()?;
+    sender.set_composition_field(field, &value)?;
+    Ok(send_view(&sender))
+}
+
+/// Transmits the current composition to the chosen target.
+///
+/// # Why the view is returned on failure too
+///
+/// A send that failed is a send that happened, and it is in the record. Returning
+/// the error alone would leave the screen showing a record that does not yet
+/// contain the very thing the user is being told about.
+#[tauri::command]
+#[specta::specta]
+pub fn send(state: State<'_, AppState>) -> IpcResult<SendViewDto> {
+    let mut sender = state.sender()?;
+    let outcome = state.transmit(&mut sender);
+    let view = send_view(&sender);
+    drop(sender);
+    match outcome {
+        Ok(()) => Ok(view),
+        Err(error) => Err(error),
+    }
+}
+
+/// Replaces the composition with a different message type, at its defaults.
+///
+/// The returned fields are exactly the values that message carries — no more and
+/// no fewer — because the field table lives in the core rather than in the screen.
+#[tauri::command]
+#[specta::specta]
+pub fn set_composition_kind(state: State<'_, AppState>, kind_id: String) -> IpcResult<SendViewDto> {
+    let kind =
+        SendableKind::from_id(&kind_id).ok_or(IpcError::UnknownSendableKind { id: kind_id })?;
+    let mut sender = state.sender()?;
+    sender.set_composition_kind(kind);
+    Ok(send_view(&sender))
+}
+
+/// Replaces the composition with hand-typed bytes.
+///
+/// Accepted only when the entry is exactly one valid MIDI message, judged by the
+/// same decoder the event table's rows come from. A refusal leaves the previous
+/// composition in force.
+#[tauri::command]
+#[specta::specta]
+pub fn compose_raw(state: State<'_, AppState>, entry: String) -> IpcResult<SendViewDto> {
+    let mut sender = state.sender()?;
+    sender.compose_raw(&entry)?;
+    Ok(send_view(&sender))
+}
+
+/// Sets the name the published source carries.
+///
+/// Republishes under the new name when the source is up. The receiving program
+/// sees one device leave and another arrive — which is what the user is warned
+/// about before this is called.
+#[tauri::command]
+#[specta::specta]
+pub fn set_publication_name(state: State<'_, AppState>, name: String) -> IpcResult<SendViewDto> {
+    let monitor = state.monitor()?;
+    let mut sender = state.sender()?;
+    sender.set_publication_name(PublishedName::parse(&name)?);
+    if sender.publication().published {
+        state.apply_publication(&sender)?;
+    }
+    sender.clear_publication_error();
+    state.persist(&monitor, &sender)?;
+    state.target_pump.send(targets(&sender));
+    Ok(send_view(&sender))
+}
+
+/// Starts or stops publishing the source.
+///
+/// Stopping removes it from other programs' lists and from the target list. If it
+/// was the chosen target, the choice is cleared rather than left pointing at
+/// something that no longer exists.
+#[tauri::command]
+#[specta::specta]
+pub fn set_publication_enabled(
+    state: State<'_, AppState>,
+    published: bool,
+) -> IpcResult<SendViewDto> {
+    let monitor = state.monitor()?;
+    let mut sender = state.sender()?;
+    sender.set_published(published)?;
+    state.apply_publication(&sender)?;
+    sender.clear_publication_error();
+    state.persist(&monitor, &sender)?;
+    drop(monitor);
+
+    // The published source enters and leaves the target list, so the list has
+    // changed even though no cable moved.
+    sender.replace_targets(state.current_targets());
+    state.target_pump.send(targets(&sender));
+    Ok(send_view(&sender))
+}
+
+/// Re-sends the exact bytes of an earlier send.
+///
+/// The bytes come from the record rather than from re-encoding, so a re-send of a
+/// hand-typed message sends what was typed.
+#[tauri::command]
+#[specta::specta]
+pub fn resend(state: State<'_, AppState>, record_id: u32) -> IpcResult<SendViewDto> {
+    let mut sender = state.sender()?;
+    let outcome = state.resend(&mut sender, SendRecordId::new(record_id));
+    let view = send_view(&sender);
+    drop(sender);
+    outcome.map(|()| view)
+}
+
+/// Saves the current composition under a name of the user's choosing.
+#[tauri::command]
+#[specta::specta]
+pub fn save_request(state: State<'_, AppState>, name: String) -> IpcResult<SendViewDto> {
+    let monitor = state.monitor()?;
+    let mut sender = state.sender()?;
+    sender.save_request(RequestName::parse(&name)?)?;
+    state.persist(&monitor, &sender)?;
+    Ok(send_view(&sender))
+}
+
+/// Renames one of the user's own requests.
+#[tauri::command]
+#[specta::specta]
+pub fn rename_request(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+) -> IpcResult<SendViewDto> {
+    let from = RequestName::parse(&from)?;
+    let to = RequestName::parse(&to)?;
+    let monitor = state.monitor()?;
+    let mut sender = state.sender()?;
+    sender.library_mut().rename(&from, to)?;
+    state.persist(&monitor, &sender)?;
+    Ok(send_view(&sender))
+}
+
+/// Deletes one of the user's own requests.
+#[tauri::command]
+#[specta::specta]
+pub fn delete_request(state: State<'_, AppState>, name: String) -> IpcResult<SendViewDto> {
+    let name = RequestName::parse(&name)?;
+    let monitor = state.monitor()?;
+    let mut sender = state.sender()?;
+    sender.library_mut().delete(&name)?;
+    state.persist(&monitor, &sender)?;
+    Ok(send_view(&sender))
 }

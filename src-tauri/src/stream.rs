@@ -17,7 +17,7 @@
 //! each — less work on both sides, and aligned with when the browser actually
 //! repaints.
 
-use crate::dto::{CatalogueDto, EventDto};
+use crate::dto::{CatalogueDto, EventDto, TargetsDto};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -149,24 +149,32 @@ impl Default for EventPump {
     }
 }
 
-/// Pushes catalogue changes to the webview as devices come and go.
+/// Pushes a latest-wins payload to the webview when something changes.
 ///
 /// # Why this is not folded into [`EventPump`]
 ///
 /// The two carry unrelated payloads at unrelated rates. Events arrive hundreds
-/// per second and are worth batching on a frame timer; a catalogue change happens
-/// when someone physically touches a cable. Sharing one channel would force a sum
-/// type onto the hot path and make the batching interval the floor for how
-/// quickly the Sources list could react.
+/// per second and are worth batching on a frame timer; the changes this pump
+/// carries happen when someone physically touches a cable. Sharing one channel
+/// would force a sum type onto the hot path and make the batching interval the
+/// floor for how quickly the Sources list could react.
 ///
 /// No batching here for the same reason: there is nothing to coalesce. The burst
 /// one plug event produces is already collapsed by the adapter, before it reaches
 /// this layer.
-pub struct CataloguePump {
-    channel: Mutex<Option<Channel<CatalogueDto>>>,
+///
+/// # Why this is generic when it once was not
+///
+/// It carried only the source catalogue. The send screen needs exactly the same
+/// behaviour for the target list — latest wins, no batching, on the same
+/// human-scale event — so a second hand-written copy would be twenty duplicated
+/// lines whose only difference is a type. `EventPump` stays separate because its
+/// substance *is* the batching, and none of that is shared.
+pub struct PushPump<T> {
+    channel: Mutex<Option<Channel<T>>>,
 }
 
-impl CataloguePump {
+impl<T: Clone + serde::Serialize + Send + 'static> PushPump<T> {
     /// Creates a pump with no subscriber.
     #[must_use]
     pub const fn new() -> Self {
@@ -180,14 +188,14 @@ impl CataloguePump {
     /// Replacing rather than rejecting matters during development: a hot reload
     /// mounts a fresh webview, and the stale channel must not keep the old one
     /// alive.
-    pub fn subscribe(&self, channel: Channel<CatalogueDto>) {
+    pub fn subscribe(&self, channel: Channel<T>) {
         if let Ok(mut slot) = self.channel.lock() {
             *slot = Some(channel);
         }
     }
 
-    /// Sends a catalogue to the webview, if anyone is listening.
-    pub fn send(&self, catalogue: CatalogueDto) {
+    /// Sends the latest payload to the webview, if anyone is listening.
+    pub fn send(&self, payload: T) {
         let Ok(slot) = self.channel.lock() else {
             return;
         };
@@ -196,12 +204,22 @@ impl CataloguePump {
         };
         // A send failure means the webview is gone — during a reload, or at
         // shutdown. There is nobody left to report it to.
-        drop(channel.send(catalogue));
+        drop(channel.send(payload));
     }
 }
 
-impl Default for CataloguePump {
+impl<T: Clone + serde::Serialize + Send + 'static> Default for PushPump<T> {
     fn default() -> Self {
         Self::new()
     }
 }
+
+/// The pump that pushes the Sources catalogue as devices come and go.
+pub type CataloguePump = PushPump<CatalogueDto>;
+
+/// The pump that pushes the send screen's target list.
+///
+/// Driven by the same device-change notification the catalogue is: one cable
+/// moved changes both lists, and both are read from the adapter in the same
+/// callback.
+pub type TargetPump = PushPump<TargetsDto>;
