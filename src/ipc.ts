@@ -1,6 +1,12 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "./bindings";
-import type { CatalogueDto, EventBatchDto, EventDto, IpcError } from "./bindings";
+import type {
+  CatalogueDto,
+  EventBatchDto,
+  EventDto,
+  IpcError,
+  PrefixModeDto,
+} from "./bindings";
 import { useMonitorStore } from "./store";
 
 /**
@@ -13,6 +19,22 @@ import { useMonitorStore } from "./store";
  * same six lines everywhere and invite one of them to quietly ignore a failure.
  * Here it happens once, and a failure always lands somewhere the user can see.
  */
+
+/**
+ * Names a rule kind the way the control that creates it does.
+ *
+ * The words are the interface's own — `Show only` and `Hide` — so an error about
+ * a rule reads in the same vocabulary as the rule itself. Exhaustive with no
+ * default arm, for the same reason as `describeError` below.
+ */
+function describePrefixMode(mode: PrefixModeDto): string {
+  switch (mode) {
+    case "include":
+      return "Show only";
+    case "exclude":
+      return "Hide";
+  }
+}
 
 /**
  * Turns a typed error into a sentence for the user.
@@ -31,6 +53,12 @@ export function describeError(error: IpcError): string {
       return `"${error.data.entry}" is not hexadecimal. The previous filter is still in effect.`;
     case "emptyHexPrefix":
       return "A hexadecimal prefix cannot be empty.";
+    case "duplicatePrefixRule":
+      return `A rule for "${error.data.prefix}" is already in the list (${describePrefixMode(error.data.existingKind)}). Delete it first, or enter a different prefix.`;
+    case "contradictoryPrefixRule":
+      return `"${describePrefixMode(error.data.kind)} ${error.data.prefix}" clashes with "${describePrefixMode(error.data.existingKind)} ${error.data.existingPrefix}" — the prefixes overlap and the two rules have opposite effects. Narrow one of them, or delete the existing rule.`;
+    case "unknownPrefixRule":
+      return `There is no rule for "${error.data.prefix}" — the list has changed since it was shown.`;
     case "lastColumnVisible":
       return "At least one column must stay visible.";
     case "unknownSource":
@@ -91,6 +119,45 @@ async function run<T>(
   }
   setError(null);
   return result.data;
+}
+
+/**
+ * Runs a command and hands its failure back instead of putting it in the banner.
+ *
+ * # Why some failures take this path
+ *
+ * The banner sits between the controls and the event table, which is the right
+ * place for something the user cannot attribute — settings that would not save, a
+ * source that has gone. It is the wrong place for a rule the user just typed:
+ * they are looking at the field, not at a strip further down the window, and the
+ * message has to be beside the thing that needs correcting.
+ *
+ * Describing the error still happens here, through the same exhaustive
+ * `describeError`, so a caller receives a finished sentence and never inspects a
+ * variant to decide what to say.
+ */
+async function runReporting<T>(
+  call: Promise<{ status: "ok"; data: T } | { status: "error"; error: IpcError }>,
+): Promise<{ data: T; message: null } | { data: null; message: string }> {
+  let result;
+  try {
+    result = await call;
+  } catch (thrown) {
+    return {
+      data: null,
+      message: `The application could not be reached: ${String(thrown)}`,
+    };
+  }
+
+  if (result.status === "error") {
+    return {
+      data: null,
+      message: isIpcError(result.error)
+        ? describeError(result.error)
+        : `Unexpected failure: ${String(result.error)}`,
+    };
+  }
+  return { data: result.data, message: null };
 }
 
 /**
@@ -231,11 +298,54 @@ export const setFilter = (
   channelMode: Parameters<typeof commands.setFilter>[1],
 ) => mutate(commands.setFilter(kinds, channelMode), true);
 
-/** Replaces the hexadecimal prefix filter. */
-export const setDataPrefixFilter = (
-  mode: Parameters<typeof commands.setDataPrefixFilter>[0],
-  prefixes: string[],
-) => mutate(commands.setDataPrefixFilter(mode, prefixes), true);
+/**
+ * Applies a rule change, returning its failure rather than banner-ing it.
+ *
+ * Refreshes the panels on success, because the rule list itself is part of the
+ * Filter model: the snapshot says which events survive, and only
+ * `getFilterModel` says which rules are in force. On failure nothing is applied,
+ * which matches what the core did — it refused before mutating.
+ *
+ * Returns `null` when the change went through, or the sentence to show beside
+ * the control when it did not.
+ */
+async function mutateRules(
+  call: ReturnType<typeof commands.snapshot>,
+): Promise<string | null> {
+  const result = await runReporting(call);
+  if (result.message !== null) {
+    return result.message;
+  }
+  useMonitorStore.getState().applySnapshot(result.data);
+  await refreshPanels();
+  return null;
+}
+
+/** Adds one data prefix rule. Resolves to the failure message, or `null`. */
+export const addDataPrefixRule = (
+  prefix: string,
+  kind: Parameters<typeof commands.addDataPrefixRule>[1],
+) => mutateRules(commands.addDataPrefixRule(prefix, kind));
+
+/**
+ * Removes the data prefix rule carrying this prefix.
+ *
+ * Resolves to the failure message, or `null`. Deleting can only fail when the
+ * list on screen is behind the core's, which is exactly the case where the
+ * message belongs next to the list rather than in the window's banner.
+ */
+export const removeDataPrefixRule = (prefix: string) =>
+  mutateRules(commands.removeDataPrefixRule(prefix));
+
+/**
+ * Starts or stops taking in what arrives.
+ *
+ * Refreshes no panel: pausing changes no filter, no column, and no source, so
+ * rebuilding those structures would imply a coupling that does not exist.
+ */
+export const setCaptureState = (
+  capture: Parameters<typeof commands.setCaptureState>[0],
+) => mutate(commands.setCaptureState(capture), false);
 
 /** Replaces the retention cap. */
 export const setRetentionLimit = (limit: number) =>

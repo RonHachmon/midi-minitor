@@ -14,11 +14,12 @@
 //! not a presentation choice, so rendering it on the far side of a serialization
 //! boundary would put a domain rule in the webview and duplicate it.
 
+use midi_core::application::capture::CaptureState;
 use midi_core::application::monitor::Monitor;
 use midi_core::application::ports::{ByteFidelity, MidiSystemStatus};
 use midi_core::domain::column::Column;
 use midi_core::domain::event::MidiEvent;
-use midi_core::domain::filter::{ChannelMode, PrefixMode};
+use midi_core::domain::filter::{ChannelMode, DataPrefixRule, PrefixMode};
 use midi_core::domain::ids::SourceGroupId;
 use midi_core::domain::message::{MessageCategory, MessageKind};
 use midi_core::domain::source::{Availability, CheckState, SourceCatalogue};
@@ -322,6 +323,45 @@ pub enum ChannelModeDto {
     OneChannel(u8),
 }
 
+/// Whether the monitor is taking in what arrives, or holding what it has.
+///
+/// # Why this crosses the wire at all
+///
+/// The control must show which state the monitor is in, and the core is the only
+/// component that knows. A frozen list that cannot say it is frozen is
+/// indistinguishable from a stalled one — which is the failure the control exists
+/// to prevent.
+///
+/// Tagged union rather than a boolean, matching every other state the webview
+/// renders: a third capture state would become a type error at each site instead
+/// of silently rendering as though it were one of these two.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+pub enum CaptureStateDto {
+    /// Arriving events are being retained and streamed.
+    Running,
+    /// Arriving events are discarded; what was retained is untouched.
+    Paused,
+}
+
+impl From<CaptureStateDto> for CaptureState {
+    fn from(capture: CaptureStateDto) -> Self {
+        match capture {
+            CaptureStateDto::Running => Self::Running,
+            CaptureStateDto::Paused => Self::Paused,
+        }
+    }
+}
+
+impl From<CaptureState> for CaptureStateDto {
+    fn from(capture: CaptureState) -> Self {
+        match capture {
+            CaptureState::Running => Self::Running,
+            CaptureState::Paused => Self::Paused,
+        }
+    }
+}
+
 /// Whether prefix matches are shown or hidden.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -350,6 +390,30 @@ impl From<PrefixMode> for PrefixModeDto {
     }
 }
 
+/// One data prefix rule as the panel lists it.
+///
+/// The prefix crosses as the **normalised** string the core stores, and the
+/// interface sends that same string back to delete the rule. Normalising in one
+/// place keeps `9a`, `9A`, and `9 A` from being three different rules depending
+/// on which side of the boundary looked at them.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DataPrefixRuleDto {
+    /// The normalised nibble prefix — also this rule's identity.
+    pub prefix: String,
+    /// Whether matches are the only events shown, or the only ones hidden.
+    pub kind: PrefixModeDto,
+}
+
+impl From<&DataPrefixRule> for DataPrefixRuleDto {
+    fn from(rule: &DataPrefixRule) -> Self {
+        Self {
+            prefix: rule.prefix.as_str().to_owned(),
+            kind: rule.kind.into(),
+        }
+    }
+}
+
 /// The full state of the Filter panel.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -360,10 +424,8 @@ pub struct FilterViewDto {
     pub standalone: Vec<MessageKindDto>,
     /// The channel radio pair.
     pub channel_mode: ChannelModeDto,
-    /// Whether prefix matches are shown or hidden.
-    pub prefix_mode: PrefixModeDto,
-    /// The prefixes currently applied, normalised.
-    pub prefixes: Vec<String>,
+    /// The data prefix rules in force, in the order they were added.
+    pub rules: Vec<DataPrefixRuleDto>,
 }
 
 /// Which columns are shown, in display order.
@@ -401,6 +463,15 @@ pub struct SnapshotDto {
     /// The webview discards stream batches at or below this mark, so a batch in
     /// flight during a settings change cannot resurrect a filtered-out event.
     pub high_water_mark: Option<u32>,
+    /// Whether the monitor is taking in what arrives.
+    ///
+    /// # Why this is separate from `monitoring`
+    ///
+    /// Both can leave the list empty and motionless, and the user's next move is
+    /// different for each: select a source, versus press Resume. Folding them
+    /// into one flag would make the interface explain one of the two situations
+    /// wrongly, every time.
+    pub capture_state: CaptureStateDto,
 }
 
 impl SnapshotDto {
@@ -418,6 +489,7 @@ impl SnapshotDto {
             retention_limit: u32::try_from(monitor.retention().get()).unwrap_or(u32::MAX),
             monitoring: monitor.is_monitoring(),
             high_water_mark,
+            capture_state: monitor.capture_state().into(),
         }
     }
 }
@@ -532,12 +604,11 @@ pub fn filter_view(monitor: &Monitor) -> FilterViewDto {
             ChannelMode::AllChannels => ChannelModeDto::AllChannels,
             ChannelMode::OneChannel(channel) => ChannelModeDto::OneChannel(channel.get()),
         },
-        prefix_mode: filter.data_filter.mode.into(),
-        prefixes: filter
+        rules: filter
             .data_filter
-            .prefixes
+            .rules
             .iter()
-            .map(|prefix| prefix.as_str().to_owned())
+            .map(DataPrefixRuleDto::from)
             .collect(),
     }
 }

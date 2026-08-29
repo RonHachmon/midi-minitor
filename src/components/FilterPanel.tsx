@@ -1,7 +1,7 @@
 import type { ChannelModeDto, FilterViewDto } from "../bindings";
 import { setFilter } from "../ipc";
 import { useMonitorStore } from "../store";
-import { HexPrefixFilter } from "./HexPrefixFilter";
+import { DataPrefixRules } from "./DataPrefixRules";
 import { TriStateCheckbox } from "./TriStateCheckbox";
 
 /** Collects the ids of every currently ticked checkbox. */
@@ -136,7 +136,7 @@ export function FilterPanel() {
         </label>
       </fieldset>
 
-      <HexPrefixFilter />
+      <DataPrefixRules />
     </div>
   );
 }

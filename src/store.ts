@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   ByteFidelityDto,
+  CaptureStateDto,
   CatalogueDto,
   ColumnDto,
   EventDto,
@@ -30,6 +31,15 @@ export interface MonitorState {
   retentionLimit: number;
   /** False when no source is selected — an explained empty list, not a stalled one. */
   monitoring: boolean;
+  /**
+   * Whether the core is taking in what arrives, or holding what it has.
+   *
+   * Separate from `monitoring` because the two produce the same empty list and
+   * call for different actions — select a source, versus press Resume. Read from
+   * every snapshot rather than tracked locally, so the control cannot come to
+   * disagree with the core about which state the monitor is in.
+   */
+  captureState: CaptureStateDto;
   /**
    * Newest event id included in the last snapshot.
    *
@@ -83,6 +93,7 @@ export const useMonitorStore = create<MonitorState>((set) => ({
   retainedCount: 0,
   retentionLimit: 1000,
   monitoring: true,
+  captureState: { type: "running" },
   highWaterMark: null,
   groups: [],
   midiSystem: { type: "available" },
@@ -99,9 +110,14 @@ export const useMonitorStore = create<MonitorState>((set) => ({
       retainedCount: snapshot.retainedCount,
       retentionLimit: snapshot.retentionLimit,
       monitoring: snapshot.monitoring,
+      captureState: snapshot.captureState,
       highWaterMark: snapshot.highWaterMark,
     }),
 
+  // Deliberately unaware of the capture state. While paused the core streams
+  // nothing, so there is nothing here to suppress — and a check for it would be
+  // a rule about which events count, on the side of the boundary that is not
+  // allowed to hold one.
   appendBatch: (incoming) =>
     set((state) => {
       const mark = state.highWaterMark;

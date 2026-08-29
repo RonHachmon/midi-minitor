@@ -13,13 +13,13 @@
 //! list rather than patching it.
 
 use crate::dto::{
-    catalogue, columns, filter_view, CatalogueDto, ChannelModeDto, ColumnDto, EventBatchDto,
-    FilterViewDto, MutationResultDto, PrefixModeDto, SnapshotDto,
+    catalogue, columns, filter_view, CaptureStateDto, CatalogueDto, ChannelModeDto, ColumnDto,
+    EventBatchDto, FilterViewDto, MutationResultDto, PrefixModeDto, SnapshotDto,
 };
 use crate::error::{IpcError, IpcResult};
 use crate::state::AppState;
 use midi_core::domain::column::Column;
-use midi_core::domain::filter::{ChannelMode, DataPrefixFilter, FilterSettings};
+use midi_core::domain::filter::{ChannelMode, DataPrefixFilter, DataPrefixRule, FilterSettings};
 use midi_core::domain::ids::{ChannelNumber, HexPrefix, RetentionLimit, SourceGroupId, SourceId};
 use midi_core::domain::message::MessageKind;
 use tauri::ipc::Channel;
@@ -165,30 +165,50 @@ pub fn set_filter(
     Ok(SnapshotDto::from_monitor(&monitor))
 }
 
-/// Replaces the hexadecimal prefix filter.
+/// Adds one data prefix rule.
 ///
 /// # Errors
 ///
-/// A malformed entry fails **before** any state is changed, so the previously
-/// applied filter stays in effect and the event list does not blank out because
-/// of a typo.
+/// A malformed entry, an empty one, or one that clashes with a listed rule fails
+/// **before** any state is changed, so the rules in force keep running and the
+/// event list does not blank out because of a typo or a refused addition.
 #[tauri::command]
 #[specta::specta]
-pub fn set_data_prefix_filter(
+pub fn add_data_prefix_rule(
     state: State<'_, AppState>,
-    mode: PrefixModeDto,
-    prefixes: Vec<String>,
+    prefix: String,
+    kind: PrefixModeDto,
 ) -> IpcResult<SnapshotDto> {
-    let parsed = prefixes
-        .iter()
-        .map(|entry| HexPrefix::parse(entry))
-        .collect::<Result<Vec<_>, _>>()?;
+    let prefix = HexPrefix::parse(&prefix)?;
 
     let mut monitor = state.monitor()?;
-    monitor.set_data_prefix_filter(DataPrefixFilter {
-        mode: mode.into(),
-        prefixes: parsed,
-    });
+    monitor.add_prefix_rule(DataPrefixRule::new(prefix, kind.into()))?;
+    state.pump.discard_pending();
+    state.persist(&monitor)?;
+    Ok(SnapshotDto::from_monitor(&monitor))
+}
+
+/// Removes the data prefix rule carrying this prefix.
+///
+/// # Errors
+///
+/// Returns [`IpcError::UnknownPrefixRule`] when no rule carries it, which means
+/// the interface is working from a rule list the core has since changed.
+///
+/// The prefix is parsed rather than compared raw so that the same normalisation
+/// applies on the way out as on the way in — an interface echoing back what it
+/// was given always matches, and a hand-built call in a different notation still
+/// finds the right rule.
+#[tauri::command]
+#[specta::specta]
+pub fn remove_data_prefix_rule(
+    state: State<'_, AppState>,
+    prefix: String,
+) -> IpcResult<SnapshotDto> {
+    let prefix = HexPrefix::parse(&prefix)?;
+
+    let mut monitor = state.monitor()?;
+    monitor.remove_prefix_rule(&prefix)?;
     state.pump.discard_pending();
     state.persist(&monitor)?;
     Ok(SnapshotDto::from_monitor(&monitor))
@@ -205,7 +225,37 @@ pub fn set_retention_limit(state: State<'_, AppState>, limit: u32) -> IpcResult<
     Ok(SnapshotDto::from_monitor(&monitor))
 }
 
+/// Starts or stops taking in what arrives.
+///
+/// # Why the pending batch is discarded
+///
+/// The pump flushes on a frame timer, so up to one interval's worth of events
+/// can already be queued when the user pauses. Delivering them afterwards would
+/// append rows to a list the user has just frozen. They are dropped rather than
+/// lost: every one of them was retained before the pause and is therefore
+/// present in the snapshot this returns.
+///
+/// # Why this does not persist
+///
+/// The capture state is session-only by design — see
+/// [`midi_core::application::capture::CaptureState`]. Writing it would mean a
+/// relaunch could open a window that shows nothing and never updates.
+#[tauri::command]
+#[specta::specta]
+pub fn set_capture_state(
+    state: State<'_, AppState>,
+    capture: CaptureStateDto,
+) -> IpcResult<SnapshotDto> {
+    let mut monitor = state.monitor()?;
+    monitor.set_capture_state(capture.into());
+    state.pump.discard_pending();
+    Ok(SnapshotDto::from_monitor(&monitor))
+}
+
 /// Discards every retained event.
+///
+/// Behaves identically whether the monitor is running or paused: it empties the
+/// log and changes nothing else, so pausing and clearing stay independent.
 #[tauri::command]
 #[specta::specta]
 pub fn clear_events(state: State<'_, AppState>) -> IpcResult<SnapshotDto> {

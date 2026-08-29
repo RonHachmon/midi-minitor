@@ -9,6 +9,7 @@
 //! behaviour rather than a bug. A malformed hex prefix must leave the previous
 //! filter running, and it can only do that if it arrives as a value.
 
+use crate::domain::filter::PrefixMode;
 use crate::domain::ids::SourceId;
 use thiserror::Error;
 
@@ -59,6 +60,58 @@ pub enum CoreError {
     /// there is nothing to correct, the user simply has not finished typing.
     #[error("a hexadecimal prefix cannot be empty")]
     EmptyHexPrefix,
+
+    /// A prefix rule was added whose prefix is already in the list.
+    ///
+    /// Produced under **either** kind, because the prefix is a rule's identity:
+    /// two rules carrying the same prefix would make deletion ambiguous, and one
+    /// of each kind would contradict outright. The caller should report the
+    /// refusal and leave the list untouched; the remedy is to delete the listed
+    /// rule or to enter a different prefix.
+    #[error("a rule for '{prefix}' is already in the list")]
+    DuplicatePrefixRule {
+        /// The normalised prefix, for quoting back at the entry field.
+        prefix: String,
+        /// The kind the listed rule carries, so the message can name it.
+        existing_kind: PrefixMode,
+    },
+
+    /// A prefix rule was added that contradicts one already in the list.
+    ///
+    /// Produced when the two prefixes overlap — one begins the other — and their
+    /// kinds differ, which is the only way an event could match both a show-only
+    /// rule and a hide rule. Refusing the pair here is what lets
+    /// [`crate::domain::filter::DataPrefixFilter::admits`] need no precedence
+    /// rule at all.
+    ///
+    /// Distinct from [`Self::DuplicatePrefixRule`] because the remedy differs:
+    /// there is no duplicate to delete, one of the two prefixes has to be
+    /// narrowed or one of the kinds changed. The caller should name both rules,
+    /// since the conflicting one is not the one the user just typed.
+    #[error(
+        "'{prefix}' overlaps the existing rule for '{existing_prefix}', which has the opposite effect"
+    )]
+    ContradictoryPrefixRule {
+        /// The normalised prefix being added.
+        prefix: String,
+        /// The kind being added.
+        kind: PrefixMode,
+        /// The listed prefix it overlaps.
+        existing_prefix: String,
+        /// That rule's kind.
+        existing_kind: PrefixMode,
+    },
+
+    /// A prefix arrived that names no rule in the list.
+    ///
+    /// Signals an interface holding a rule list the core has since changed — the
+    /// prefix-rule counterpart of [`Self::UnknownSource`]. The caller should
+    /// refresh its view of the list rather than retry.
+    #[error("no rule for '{prefix}' is in the list")]
+    UnknownPrefixRule {
+        /// The unrecognised prefix.
+        prefix: String,
+    },
 
     /// Hiding this column would leave the table with no columns at all.
     ///

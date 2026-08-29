@@ -22,6 +22,14 @@
   --color-ink-faint: #8a8a8f;
   --color-accent: #0a67d0;
   --color-danger: #b3261e;
+  --color-danger-tint: #fdf2f1;
+
+  /* Control faces. A button in the reference is white at rest; the hover and
+     pressed steps are this palette's own chrome tones rather than a generic
+     grey, so a control never looks like it came from a different window. */
+  --color-control: #ffffff;
+  --color-control-hover: #f2eeec;
+  --color-control-active: #e2dcd9;
 
   /* Row metrics: the reference list fits ~9 rows in ~215px. */
   --spacing-row: 24.5px;
@@ -30,6 +38,89 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-hex:
     "Cascadia Mono", "SF Mono", "Consolas", ui-monospace, monospace;
+}
+
+/*
+ * Button behaviour, defined once.
+ *
+ * # Why this is a class rather than utilities repeated per component
+ *
+ * `Clear`, `Pause`, and `Add` are the same control in three places, and the
+ * hover, pressed, and focus steps are the part a reader cannot check against the
+ * screenshots — the reference is a still image and shows only the rest state.
+ * Written inline they would drift apart the first time one of them was adjusted.
+ * Here there is one definition to compare against the image, and one to change.
+ *
+ * The transition is deliberately short: this is a monitor, and a control that
+ * animates slowly reads as laggy next to a list updating sixty times a second.
+ */
+.chrome-button {
+  border: 1px solid var(--color-chrome-border);
+  border-radius: 5px;
+  background: var(--color-control);
+  color: var(--color-ink);
+  transition:
+    background-color 110ms ease,
+    border-color 110ms ease;
+}
+
+.chrome-button:hover {
+  background: var(--color-control-hover);
+  border-color: var(--color-ink-faint);
+}
+
+.chrome-button:active {
+  background: var(--color-control-active);
+}
+
+/*
+ * A toggle that is currently engaged, such as `Pause` while the monitor is
+ * paused. Held state is shown by the face staying pressed rather than by a
+ * second label elsewhere: the button already says `Resume`, and one statement of
+ * a fact is enough.
+ */
+.chrome-button[aria-pressed="true"] {
+  background: var(--color-control-active);
+  border-color: var(--color-ink-faint);
+}
+
+/*
+ * The unadorned controls — a dismiss cross, a rule's delete cross. They carry no
+ * border at rest so they stay out of the way, and earn one on hover so it is
+ * obvious they are hit targets rather than decoration.
+ */
+.icon-button {
+  border-radius: 4px;
+  color: var(--color-ink-faint);
+  transition:
+    background-color 110ms ease,
+    color 110ms ease;
+}
+
+.icon-button:hover {
+  background: var(--color-control-active);
+  color: var(--color-ink);
+}
+
+/* Keyboard focus is visible on every control, on the same terms. Pointer focus
+   is not, which is why this is `:focus-visible` and not `:focus`. */
+.chrome-button:focus-visible,
+.icon-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/*
+ * A listed filter rule. The row tints on hover so the delete control beside it
+ * is discoverable without every row shouting for attention at rest.
+ */
+.rule-row {
+  border-radius: 4px;
+  transition: background-color 110ms ease;
+}
+
+.rule-row:hover {
+  background: var(--color-control-hover);
 }
 
 /*

@@ -11,6 +11,7 @@
 //! interface that something failed; a variant tells it *which control* to
 //! explain the failure at, and carries the offending value to quote back.
 
+use crate::dto::PrefixModeDto;
 use midi_core::application::error::CoreError;
 use serde::Serialize;
 use specta::Type;
@@ -50,6 +51,52 @@ pub enum IpcError {
     /// A hexadecimal prefix entry held no hex digits.
     #[error("empty hex prefix")]
     EmptyHexPrefix,
+
+    /// A rule for this prefix is already in the list, under either kind.
+    ///
+    /// The list is unchanged. The interface should say which rule it clashed
+    /// with, so the user can delete that one or enter a different prefix without
+    /// going to read the list themselves.
+    // `rename_all` on the enum renames the *variants*; a struct variant's own
+    // fields need their own attribute. Every other variant here happens to carry
+    // single-word fields, so this is the first place it shows.
+    #[error("duplicate prefix rule")]
+    #[serde(rename_all = "camelCase")]
+    DuplicatePrefixRule {
+        /// The normalised prefix that was refused.
+        prefix: String,
+        /// The kind the listed rule carries.
+        existing_kind: PrefixModeDto,
+    },
+
+    /// This rule overlaps a listed rule of the opposite kind.
+    ///
+    /// The list is unchanged. Both rules must be named when this is explained:
+    /// the one it conflicts with is not the one the user just typed, so a message
+    /// quoting only the entry would leave them to go and work out which listed
+    /// rule was meant.
+    #[error("contradictory prefix rule")]
+    #[serde(rename_all = "camelCase")]
+    ContradictoryPrefixRule {
+        /// The normalised prefix that was refused.
+        prefix: String,
+        /// The kind that was refused.
+        kind: PrefixModeDto,
+        /// The listed prefix it overlaps.
+        existing_prefix: String,
+        /// That rule's kind.
+        existing_kind: PrefixModeDto,
+    },
+
+    /// A prefix arrived that names no rule in the list.
+    ///
+    /// Reachable when the interface is working from a rule list the core has
+    /// since changed. The caller should refresh rather than retry.
+    #[error("unknown prefix rule")]
+    UnknownPrefixRule {
+        /// The unrecognised prefix.
+        prefix: String,
+    },
 
     /// Hiding this column would leave no columns visible.
     #[error("last visible column")]
@@ -106,6 +153,25 @@ impl From<CoreError> for IpcError {
             },
             CoreError::MalformedHexPrefix { entry } => Self::MalformedHexPrefix { entry },
             CoreError::EmptyHexPrefix => Self::EmptyHexPrefix,
+            CoreError::DuplicatePrefixRule {
+                prefix,
+                existing_kind,
+            } => Self::DuplicatePrefixRule {
+                prefix,
+                existing_kind: existing_kind.into(),
+            },
+            CoreError::ContradictoryPrefixRule {
+                prefix,
+                kind,
+                existing_prefix,
+                existing_kind,
+            } => Self::ContradictoryPrefixRule {
+                prefix,
+                kind: kind.into(),
+                existing_prefix,
+                existing_kind: existing_kind.into(),
+            },
+            CoreError::UnknownPrefixRule { prefix } => Self::UnknownPrefixRule { prefix },
             CoreError::LastColumnVisible => Self::LastColumnVisible,
             CoreError::SettingsStorage { detail } => Self::SettingsUnavailable { detail },
             CoreError::UnknownSource { id } => Self::UnknownSource { id: id.get() },
