@@ -15,8 +15,20 @@ appears in a table: the time, the source, the message type, the channel, and the
   not hidden. That is the point of a monitor.
 - **Receives from other apps** — macOS only. Turn on `Act as a destination for other
   programs`, and the monitor appears as a MIDI destination that other software can send to.
-- **Filters the view.** By source, by message type, by channel, or by a hex prefix. You can
-  also hide columns and set how many events to keep.
+- **Filters the view.** By source, by message type, by channel, or by hex prefix rules. You
+  can also hide columns and set how many events to keep.
+- **Pauses without losing anything.** Press `Pause` and the list stops moving. Every event
+  already received stays exactly where it is, however long you leave it and however fast the
+  device is sending — because pausing stops the monitor *recording*, so nothing new can push
+  those rows past the retention limit. The trade is that traffic arriving during a pause is
+  not recorded; the row says so while it is paused.
+- **Builds a list of data rules.** Under `Data starts with`, add a prefix as either
+  `Show only` or `Hide`, and add as many as you need. Each rule is listed and each can be
+  deleted on its own. Prefixes match nibbles, so `9` covers `90` through `9F`.
+  A rule that repeats or contradicts one already listed is refused, and the message names
+  both rules — the list is kept free of contradictions rather than silently picking a winner.
+  One consequence follows from that and is deliberate: while a `Show only` rule is in the
+  list, `Hide` rules have nothing left to remove.
 
 Watching another app's *outgoing* traffic is not built yet. That control is on screen and
 tells you it is unavailable.
