@@ -26,27 +26,35 @@
 //! makes the compiler enforce, on both platforms, precisely what the shell
 //! depends on.
 
-use midi_core::application::ports::{Clock, EventSource};
+use midi_core::application::ports::{Clock, MidiAccess};
 use std::sync::Arc;
 
 /// Builds the MIDI adapter this platform provides, timestamping with `clock`.
+///
+/// Returns both directions bundled: the adapter receives *and* transmits, and on
+/// macOS the two must share one CoreMIDI client, so they cannot be handed out
+/// separately. See [`MidiAccess`] for why that constraint decides the shape here.
 ///
 /// Boxed rather than returned concretely so the two arms below have one return
 /// type. The cost is one virtual call per event batch, which is nothing next to
 /// the work of decoding one.
 #[cfg(target_os = "macos")]
 #[must_use]
-pub fn event_source(clock: Arc<dyn Clock>) -> Box<dyn EventSource> {
+pub fn midi_access(clock: Arc<dyn Clock>) -> Box<dyn MidiAccess> {
     Box::new(midi_macos::CoreMidiSource::new(clock))
 }
 
 /// Builds the MIDI adapter this platform provides, timestamping with `clock`.
+///
+/// Returns both directions bundled: the adapter receives *and* transmits, and on
+/// macOS the two must share one CoreMIDI client, so they cannot be handed out
+/// separately. See [`MidiAccess`] for why that constraint decides the shape here.
 ///
 /// Boxed rather than returned concretely so the two arms above have one return
 /// type. The cost is one virtual call per event batch, which is nothing next to
 /// the work of decoding one.
 #[cfg(target_os = "windows")]
 #[must_use]
-pub fn event_source(clock: Arc<dyn Clock>) -> Box<dyn EventSource> {
+pub fn midi_access(clock: Arc<dyn Clock>) -> Box<dyn MidiAccess> {
     Box::new(midi_windows::WindowsMidiSource::new(clock))
 }

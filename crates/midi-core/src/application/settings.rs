@@ -8,8 +8,10 @@
 //! session-only and this type carries configuration alone.
 
 use crate::domain::column::ColumnVisibility;
+use crate::domain::composition::PersistedComposition;
 use crate::domain::filter::FilterSettings;
-use crate::domain::ids::{RetentionLimit, SourceKey};
+use crate::domain::ids::{RequestName, RetentionLimit, SourceKey, TargetKey};
+use crate::domain::publication::Publication;
 use serde::{Deserialize, Serialize};
 
 /// Everything restored on the next launch.
@@ -30,6 +32,23 @@ pub struct PersistedSettings {
     pub columns: ColumnVisibility,
     /// The retention cap.
     pub retention: RetentionLimit,
+    /// The send screen's state.
+    ///
+    /// `#[serde(default)]` is the whole of this feature's compatibility story,
+    /// and the contrast with the previous feature is worth stating. That one
+    /// *changed the shape* of an existing field, and because
+    /// `StoreSettingsRepository::load` treats an unreadable document as absent, a
+    /// naive change there would have silently discarded source selections,
+    /// columns, and retention along with the filter — so it needed a real
+    /// migration. This feature adds a field and changes none. A document written
+    /// by any earlier version has no `send` key, supplies the default, and keeps
+    /// every other setting intact. Writing a migration here would be dead code.
+    ///
+    /// It is one nested field rather than several at the top level for the same
+    /// reason: a defect confined to this block cannot take the user's filters or
+    /// selections down with it.
+    #[serde(default)]
+    pub send: SendSettings,
 }
 
 impl Default for PersistedSettings {
@@ -41,6 +60,63 @@ impl Default for PersistedSettings {
             filter: FilterSettings::default(),
             columns: ColumnVisibility::default(),
             retention: RetentionLimit::default(),
+            send: SendSettings::default(),
         }
+    }
+}
+
+/// What the send screen restores on the next launch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendSettings {
+    /// Where traffic was last sent, by an identity that outlives the session.
+    ///
+    /// Keyed on [`TargetKey`] for the reason `selected_sources` is: a session id
+    /// is minted while scanning and means nothing on the next launch. A key that
+    /// matches nothing in today's scan is **kept, not cleared** — the device may
+    /// come back, and forgetting the choice the moment a cable is unplugged would
+    /// be worse than leaving nothing selected for one session.
+    pub target: Option<TargetKey>,
+    /// The published source's name, and whether it was published.
+    pub publication: Publication,
+    /// The user's own requests, in the order they created them.
+    pub saved_requests: Vec<SavedRequest>,
+}
+
+/// One request the user saved, in the form that survives a restart.
+///
+/// # Why the composition is stored in its own captured form
+///
+/// A saved request must transmit **identical** bytes after a restart. For a
+/// hand-typed request that means storing the bytes as typed: re-deriving them
+/// from a decoded message would turn a `Note On` with velocity zero into a
+/// `Note Off`, which is the one thing the composition type exists to prevent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedRequest {
+    /// The name, which is also the request's identity.
+    pub name: RequestName,
+    /// What the request does, in the user's own words.
+    pub description: String,
+    /// The message, and where its authority lies.
+    pub composition: PersistedComposition,
+}
+
+impl PersistedSettings {
+    /// Replaces the send half of these settings.
+    ///
+    /// # Why this exists rather than the two halves being assembled inline
+    ///
+    /// The monitor and the sender each own one half of this document and neither
+    /// can see the other's. [`crate::application::monitor::Monitor::persisted_settings`]
+    /// therefore fills its own half and leaves this one at its default — which
+    /// means saving that value directly would silently erase the user's chosen
+    /// target, their published name, and every request they had saved.
+    ///
+    /// A named method makes the missing step greppable and gives the mistake a
+    /// place to be described, which a bare struct-update expression at one call
+    /// site would not.
+    #[must_use]
+    pub fn with_send(mut self, send: SendSettings) -> Self {
+        self.send = send;
+        self
     }
 }

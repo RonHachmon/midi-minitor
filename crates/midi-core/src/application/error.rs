@@ -170,4 +170,183 @@ pub enum CoreError {
         /// What the platform reported, for the message.
         detail: String,
     },
+
+    /// A message was handed to the encoder that cannot be transmitted.
+    ///
+    /// Produced only by [`crate::domain::message::MidiMessage::Invalid`], which
+    /// models data a *monitor* observed rather than anything a sender composed.
+    /// No caller in this application can reach it: the composition API cannot
+    /// construct that variant. It exists because the monitor's message type must
+    /// keep modelling malformed input, and narrowing it to what can be sent would
+    /// damage the older feature to serve the newer one.
+    #[error("this message cannot be transmitted: {reason}")]
+    UnsendableMessage {
+        /// Why the message is not transmittable, for the message shown.
+        reason: String,
+    },
+
+    /// Hand-typed bytes are not exactly one valid MIDI message.
+    ///
+    /// Produced when the entry decodes to nothing, to more than one message, to
+    /// malformed data, or to an unterminated System Exclusive. The caller shows
+    /// `detail` — the decoder's own reason — at the entry field and transmits
+    /// nothing, leaving the previous composition in force.
+    #[error("those bytes are not a single valid MIDI message: {detail}")]
+    MalformedSendBytes {
+        /// What the decoder found wrong, for the message shown.
+        detail: String,
+    },
+
+    /// A composition value was set outside the range its message permits.
+    ///
+    /// The caller states the permitted range at the control being edited and
+    /// leaves the composition as it was. An out-of-range value must never reach
+    /// the encoder.
+    #[error("{field} must be between {min} and {max}")]
+    ValueOutOfRange {
+        /// The field's label, for the message shown.
+        field: String,
+        /// Lowest accepted value.
+        min: u16,
+        /// Highest accepted value.
+        max: u16,
+    },
+
+    /// A send was attempted with no target chosen.
+    ///
+    /// The caller explains that a target is needed and transmits nothing. This is
+    /// the ordinary first-use state, not a fault, so the message reads as an
+    /// instruction rather than as a complaint.
+    #[error("choose where to send before sending")]
+    NoSendTarget,
+
+    /// The chosen target is no longer among those the machine reports.
+    ///
+    /// Typically the device was unplugged, or the program holding the port closed
+    /// it. The caller reports it and refreshes the target list; the stored key is
+    /// kept, so reattaching the device restores the choice.
+    #[error("{name} is no longer available to send to")]
+    UnknownTarget {
+        /// The target's name as it was last known, for the message shown.
+        name: String,
+    },
+
+    /// The platform accepted neither the bytes nor the target.
+    ///
+    /// The caller records a failed send carrying `detail` and leaves the
+    /// composition untouched, so the user can retry without re-entering anything.
+    #[error("could not send to {target}: {detail}")]
+    TransmitFailed {
+        /// The target's name, for the message shown and for the record.
+        target: String,
+        /// What the platform reported.
+        detail: String,
+    },
+
+    /// This platform cannot publish a MIDI source at all.
+    ///
+    /// Reachable only from a stale view: the control is not operable where the
+    /// platform reports the limitation, because a control that looks live and
+    /// does nothing is worse than one that explains itself. `detail` is the
+    /// adapter's own wording, naming what to do instead.
+    #[error("{detail}")]
+    PublicationUnsupported {
+        /// What the platform cannot do and what the user can do instead.
+        detail: String,
+    },
+
+    /// The platform can publish a source, but this attempt did not succeed.
+    ///
+    /// Distinct from [`Self::PublicationUnsupported`] because the responses
+    /// differ: this one is worth retrying and the other never will be. The caller
+    /// reports it and leaves everything else — including sending to destinations
+    /// — working.
+    #[error("the source could not be published: {detail}")]
+    PublicationFailed {
+        /// What the platform reported.
+        detail: String,
+    },
+
+    /// The name for the published source is empty or too long.
+    ///
+    /// The caller shows this at the name field and keeps the name already in
+    /// force. Other programs remember their settings against this string, so an
+    /// unusable name is refused rather than silently trimmed into something the
+    /// user did not choose.
+    #[error("a name for the published source must be 1 to {max} characters")]
+    MalformedPublicationName {
+        /// The accepted ceiling, for the message shown.
+        max: usize,
+    },
+
+    /// No request in the library carries that name.
+    ///
+    /// Produced when a view asks for a request that has since been deleted or
+    /// renamed. The caller reports it and refreshes the list rather than acting
+    /// on a stale name.
+    #[error("there is no request called {name}")]
+    UnknownRequest {
+        /// The name that was asked for.
+        name: String,
+    },
+
+    /// A saved request would take a name the library already holds.
+    ///
+    /// Checked against built-in names as well as saved ones: a saved request that
+    /// shadowed a built-in would quietly falsify the promise that the built-in
+    /// library is always available in full. The caller shows this at the save
+    /// control and adds nothing.
+    #[error("a request called {name} already exists")]
+    DuplicateRequestName {
+        /// The name that collided.
+        name: String,
+    },
+
+    /// A built-in request cannot be renamed or deleted.
+    ///
+    /// The built-in library is code, not data, and is always available in full.
+    /// The caller leaves the library untouched.
+    #[error("{name} is a built-in request and cannot be changed")]
+    BuiltInRequestImmutable {
+        /// The built-in that was targeted.
+        name: String,
+    },
+
+    /// The name for a saved request is empty or too long.
+    ///
+    /// The name is the request's identity, so an unusable one is refused at the
+    /// save control rather than normalised into something the user did not type.
+    #[error("a request name must be 1 to {max} characters")]
+    MalformedRequestName {
+        /// The accepted ceiling, for the message shown.
+        max: usize,
+    },
+
+    /// The composition does not carry the field that was set.
+    ///
+    /// Reachable only from a view whose model is stale — a field belonging to a
+    /// message type that is no longer composed, or any field at all on a
+    /// hand-typed composition, which has none. The caller refreshes rather than
+    /// blaming the user.
+    #[error("this message has no {field} value")]
+    UnknownField {
+        /// The field identifier that was asked for.
+        field: String,
+    },
+
+    /// No composable message carries that identifier.
+    ///
+    /// Reachable only from a stale view. The caller refreshes.
+    #[error("there is no message type called {id}")]
+    UnknownSendableKind {
+        /// The identifier that was asked for.
+        id: String,
+    },
+
+    /// No send record carries that identifier.
+    ///
+    /// Produced when a re-send names a record evicted past the retention ceiling.
+    /// The caller reports it and refreshes the record list.
+    #[error("that send is no longer in the record")]
+    UnknownSendRecord,
 }

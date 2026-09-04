@@ -30,12 +30,21 @@ appears in a table: the time, the source, the message type, the channel, and the
   One consequence follows from that and is deliberate: while a `Show only` rule is in the
   list, `Hide` rules have nothing left to remove.
 
+- **Sends MIDI too.** The window has a second screen. Pick where to send, pick one of fifteen
+  built-in requests — `Note On`, `All Notes Off`, `Start`, `Identity Request`, and the rest — and
+  send it. Or build any message from named controls: choose the type, set the channel and the
+  values, and watch the exact bytes appear before you send them. Every send says whether it went,
+  and is listed afterwards with its time and its bytes so you can send it again.
+- **Can appear as a MIDI source** — macOS only. Turn on `Publish a source other programs can
+  receive from`, give it a name, and other software on the machine lists that name among its MIDI
+  inputs and can receive from it. Sending makes the monitor look like a device that is not there.
+
 Watching another app's *outgoing* traffic is not built yet. That control is on screen and
 tells you it is unavailable.
 
 ## What differs between the two platforms
 
-Every difference is stated in the window itself, on the control it affects. There are two.
+Every difference is stated in the window itself, on the control it affects. There are three.
 
 **`Act as a destination for other programs` does not work on Windows.** Windows has no
 built-in way for an application to publish a MIDI destination other programs can send to,
@@ -49,6 +58,18 @@ application sees it, so a message sent without a repeated status byte reaches th
 that byte already restored — the byte *count* is the message Windows delivered, not what the
 cable carried. System Exclusive is exact on both platforms. The window says this next to the
 `Data` column on Windows, and does not say it on macOS, where it is not true.
+
+**Sending under a chosen name does not work on Windows.** macOS lets an application publish a MIDI
+source that other programs see as a device; Windows has no equivalent that does not mean shipping a
+system-wide driver — the same limitation, from the other direction, as the destination row above.
+The control on the send screen cannot be switched on and says so. Sending itself works in full: to
+reach another program, install a MIDI loopback utility and send to its port, which appears in the
+target list like any other destination.
+
+One thing publishing a source does **not** do is configure the program at the other end. It makes
+the monitor appear as a device; that program still has to be told to listen to it and taught what
+each message means. A send reports that the bytes were *transmitted*, which is what this
+application actually knows — never that anything received or acted on them.
 
 ## Requirements
 

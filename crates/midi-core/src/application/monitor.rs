@@ -12,7 +12,7 @@
 use super::capture::CaptureState;
 use super::error::CoreError;
 use super::ports::{MidiSystemStatus, PlatformCapabilities};
-use super::settings::PersistedSettings;
+use super::settings::{PersistedSettings, SendSettings};
 use crate::domain::column::{Column, ColumnVisibility};
 use crate::domain::event::MidiEvent;
 use crate::domain::event_log::EventLog;
@@ -401,6 +401,11 @@ impl Monitor {
             filter: self.filter.clone(),
             columns: self.columns.clone(),
             retention: self.log.limit(),
+            // The monitor does not own the send screen's state and must not
+            // invent it. The composition root fills this half in from the
+            // `Sender` before saving — see `PersistedSettings::with_send`, which
+            // exists so that step is explicit rather than easy to forget.
+            send: SendSettings::default(),
         }
     }
 

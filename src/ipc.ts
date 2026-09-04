@@ -6,8 +6,10 @@ import type {
   EventDto,
   IpcError,
   PrefixModeDto,
+  TargetsDto,
 } from "./bindings";
 import { useMonitorStore } from "./store";
+import { useSendStore } from "./sendStore";
 
 /**
  * The webview's side of the IPC contract.
@@ -69,6 +71,40 @@ export function describeError(error: IpcError): string {
       return `Settings could not be saved: ${error.data.detail}`;
     case "monitorUnavailable":
       return "The monitor stopped responding. Restart the application.";
+    case "unsendableMessage":
+      return `That message cannot be transmitted: ${error.data.reason}.`;
+    case "malformedSendBytes":
+      return `Those bytes are not a single valid MIDI message — ${error.data.detail}.`;
+    case "valueOutOfRange":
+      return `${error.data.field} must be between ${error.data.min} and ${error.data.max}.`;
+    case "noSendTarget":
+      return "Choose where to send before sending.";
+    case "unknownTarget":
+      return error.data.name === ""
+        ? "That target is no longer available."
+        : `${error.data.name} is no longer available to send to.`;
+    case "transmitFailed":
+      return `Could not send to ${error.data.target}: ${error.data.detail}`;
+    case "publicationUnsupported":
+      return error.data.detail;
+    case "publicationFailed":
+      return `The source could not be published: ${error.data.detail}`;
+    case "malformedPublicationName":
+      return `A name for the published source must be 1 to ${error.data.max} characters.`;
+    case "unknownRequest":
+      return `There is no request called "${error.data.name}" — the list has changed since it was shown.`;
+    case "duplicateRequestName":
+      return `A request called "${error.data.name}" already exists. Choose a different name.`;
+    case "builtInRequestImmutable":
+      return `"${error.data.name}" is a built-in request and cannot be renamed or deleted.`;
+    case "malformedRequestName":
+      return `A request name must be 1 to ${error.data.max} characters.`;
+    case "unknownField":
+      return "That value is not part of the message being composed.";
+    case "unknownSendableKind":
+      return "That message type is not one this version can compose.";
+    case "unknownSendRecord":
+      return "That send is no longer in the record.";
   }
 }
 
@@ -361,3 +397,113 @@ export async function setColumnVisibility(visible: string[]): Promise<void> {
     useMonitorStore.getState().setColumns(columns);
   }
 }
+
+/**
+ * Applies a send command, routing its failure beside the controls.
+ *
+ * # Why these do not use the window's banner
+ *
+ * The same split the rule list already makes: a failure the user can tie to the
+ * control they just used belongs at that control, and the banner is for failures
+ * they cannot attribute. Everything on the send screen is attributable — they
+ * pressed send, or typed a name, or chose a target — so all of it lands here.
+ *
+ * Returns the failure message, or `null` when the command went through. The view
+ * is applied in **both** cases where one came back: a failed send is a recorded
+ * send, and the screen has to show the record that the message is about.
+ */
+async function mutateSend(
+  call: ReturnType<typeof commands.getSendView>,
+): Promise<string | null> {
+  const result = await runReporting(call);
+  const store = useSendStore.getState();
+  if (result.message !== null) {
+    store.setMessage(result.message);
+    // A failed send still changed the record, so the model is re-read rather
+    // than left showing the state from before the attempt.
+    const refreshed = await runReporting(commands.getSendView());
+    if (refreshed.data !== null) {
+      store.applyView(refreshed.data);
+    }
+    return result.message;
+  }
+  store.applyView(result.data);
+  store.setMessage(null);
+  return null;
+}
+
+/** Loads the send screen's model. */
+export async function loadSendView(): Promise<void> {
+  const result = await runReporting(commands.getSendView());
+  const store = useSendStore.getState();
+  if (result.data !== null) {
+    store.applyView(result.data);
+  } else {
+    store.setMessage(result.message);
+  }
+}
+
+/**
+ * Subscribes to target-list changes so the picker follows the hardware.
+ *
+ * A separate channel from the catalogue's for the reason that one is separate
+ * from the event stream: unrelated payloads, and no reason for one to wait on
+ * the other.
+ */
+export async function subscribeSendTargets(): Promise<void> {
+  const channel = new Channel<TargetsDto>();
+  channel.onmessage = (targets) => {
+    useSendStore.getState().applyTargets(targets);
+  };
+  const initial = await run(commands.subscribeSendTargets(channel));
+  if (initial) {
+    useSendStore.getState().applyTargets(initial);
+  }
+}
+
+/** Chooses where traffic goes. */
+export const setSendTarget = (targetId: number) =>
+  mutateSend(commands.setSendTarget(targetId));
+
+/** Loads a request into the composer. */
+export const selectRequest = (name: string) =>
+  mutateSend(commands.selectRequest(name));
+
+/** Replaces the message being composed with a different type. */
+export const setCompositionKind = (kindId: string) =>
+  mutateSend(commands.setCompositionKind(kindId));
+
+/** Sets one value on the message being composed. */
+export const setCompositionField = (fieldId: string, value: string) =>
+  mutateSend(commands.setCompositionField(fieldId, value));
+
+/** Replaces the composition with hand-typed bytes. */
+export const composeRaw = (entry: string) =>
+  mutateSend(commands.composeRaw(entry));
+
+/** Transmits the current composition to the chosen target. */
+export const send = () => mutateSend(commands.send());
+
+/** Re-sends the exact bytes of an earlier send. */
+export const resend = (recordId: number) =>
+  mutateSend(commands.resend(recordId));
+
+/** Sets the name the published source carries. */
+export const setPublicationName = (name: string) =>
+  mutateSend(commands.setPublicationName(name));
+
+/** Starts or stops publishing the source. */
+export const setPublicationEnabled = (published: boolean) =>
+  mutateSend(commands.setPublicationEnabled(published));
+
+/** Saves the current composition under a name. */
+export const saveRequest = (name: string) =>
+  mutateSend(commands.saveRequest(name));
+
+/** Renames one of the user's own requests. */
+export const renameRequest = (from: string, to: string) =>
+  mutateSend(commands.renameRequest(from, to));
+
+/** Deletes one of the user's own requests. */
+export const deleteRequest = (name: string) =>
+  mutateSend(commands.deleteRequest(name));

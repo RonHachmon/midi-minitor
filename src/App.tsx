@@ -1,31 +1,34 @@
 import { useEffect } from "react";
-import { DisclosureSection } from "./components/DisclosureSection";
-import { EventTable } from "./components/EventTable";
-import { FilterPanel } from "./components/FilterPanel";
-import { RetentionRow } from "./components/RetentionRow";
-import { SourcesPanel } from "./components/SourcesPanel";
+import { MonitorScreen } from "./screens/MonitorScreen";
+import { SendScreen } from "./screens/SendScreen";
 import { startStream, subscribeCatalogue } from "./ipc";
-import { useMonitorStore } from "./store";
+import { useSendStore, type Screen } from "./sendStore";
 
 /**
- * The monitor window.
+ * The window, and the switch between its two screens.
  *
- * Vertical order follows `screenshots/main-screen.png`: the `Sources` and
- * `Filter` disclosure sections, the retention row with `Clear`, then the event
- * table filling whatever height remains. Expanding a section shrinks the table
- * rather than resizing the window.
+ * # Why the subscriptions live here rather than in the monitor screen
  *
- * # What this banner is for, now that rule errors are not in it
+ * They must outlive whichever screen is showing. Moving to the send screen
+ * unmounts the monitor, and if the event stream were subscribed there, that would
+ * silently stop the application taking in traffic — the opposite of the promise
+ * that using one screen does not disturb the other. Held at this level, the
+ * stream is opened once when the window opens and never torn down by navigation.
  *
- * A failure the user cannot tie to a control they just used — settings that would
- * not save, a source that has gone, a poisoned lock — has nowhere better to go
- * than here. A failure they *can* tie to a control belongs at that control, which
- * is why a refused filter rule is explained inside the Filter panel instead. The
- * split is the point: this strip should be rare enough to be worth reading.
+ * The monitor's own state — retained events, selections, filters, whether it is
+ * paused — is not at risk either way: it lives in Rust, so unmounting a component
+ * loses none of it.
+ *
+ * # Why the switcher is new surface rather than a change to old surface
+ *
+ * The reference images are the design authority for the monitor, and this feature
+ * adds capability rather than editing it. A strip above the window relabels
+ * nothing, reorders nothing, and restyles nothing the screenshots depict; every
+ * control they show keeps its label, its type, its position, and its default.
  */
 export function App() {
-  const error = useMonitorStore((state) => state.error);
-  const setError = useMonitorStore((state) => state.setError);
+  const screen = useSendStore((state) => state.screen);
+  const setScreen = useSendStore((state) => state.setScreen);
 
   useEffect(() => startStream(), []);
 
@@ -37,34 +40,42 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col bg-(--color-chrome)">
-      <div className="shrink-0 pt-1.5">
-        <DisclosureSection title="Sources">
-          <SourcesPanel />
-        </DisclosureSection>
-        <DisclosureSection title="Filter">
-          <FilterPanel />
-        </DisclosureSection>
-        <RetentionRow />
-      </div>
+      <nav
+        aria-label="Screen"
+        className="flex shrink-0 gap-1 border-b border-(--color-chrome-border) px-2 pt-2 pb-1.5"
+      >
+        <ScreenTab screen="monitor" label="Monitor" current={screen} onPick={setScreen} />
+        <ScreenTab screen="send" label="Send" current={screen} onPick={setScreen} />
+      </nav>
 
-      {error === null ? null : (
-        <div
-          role="alert"
-          className="flex shrink-0 items-center gap-2 border-t border-(--color-hairline) bg-(--color-danger-tint) px-3 py-1.5 text-[13px] text-(--color-danger)"
-        >
-          <span className="flex-1">{error}</span>
-          <button
-            type="button"
-            onClick={() => setError(null)}
-            aria-label="Dismiss"
-            className="icon-button px-1.5"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      <EventTable />
+      {screen === "monitor" ? <MonitorScreen /> : <SendScreen />}
     </div>
+  );
+}
+
+/** One screen button, pressed when it is the screen being shown. */
+function ScreenTab({
+  screen,
+  label,
+  current,
+  onPick,
+}: {
+  screen: Screen;
+  label: string;
+  current: Screen;
+  onPick: (screen: Screen) => void;
+}) {
+  return (
+    <button
+      type="button"
+      // `aria-pressed` rather than a role and a selected state: this is a pair of
+      // toggles, and the existing `chrome-button` styling already answers to it,
+      // so the pressed look comes from the stylesheet the rest of the window uses.
+      aria-pressed={current === screen}
+      onClick={() => onPick(screen)}
+      className="chrome-button px-3 py-1 text-[13px]"
+    >
+      {label}
+    </button>
   );
 }

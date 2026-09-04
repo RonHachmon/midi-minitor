@@ -32,10 +32,12 @@
 
 use std::mem::size_of;
 
-use midi_core::domain::ids::{SourceGroupId, SourceId, SourceKey};
+use midi_core::domain::ids::{SourceGroupId, SourceId, SourceKey, TargetId, TargetKey};
 use midi_core::domain::source::{Availability, Source};
+use midi_core::domain::target::{Target, TargetKind};
 use windows::Win32::Media::Audio::{
-    midiInGetDevCapsW, midiInGetNumDevs, midiInMessage, HMIDIIN, MIDIINCAPSW,
+    midiInGetDevCapsW, midiInGetNumDevs, midiInMessage, midiOutGetDevCapsW, midiOutGetNumDevs,
+    HMIDIIN, MIDIINCAPSW, MIDIOUTCAPSW,
 };
 use windows::Win32::Media::Multimedia::DRV_RESERVED;
 use windows::Win32::Media::MMSYSERR_NOERROR;
@@ -150,7 +152,7 @@ fn read_port(device_index: u32) -> Option<PortSnapshot> {
 
     Some(PortSnapshot {
         device_index,
-        display_name: name_of(&caps),
+        display_name: name_of(caps.szPname),
         interface_id: interface_of(device_index),
     })
 }
@@ -165,8 +167,10 @@ fn read_port(device_index: u32) -> Option<PortSnapshot> {
 /// the structure byte-packed, so borrowing a field of it could produce a
 /// misaligned reference; copying sixty-four bytes once per port per scan is not a
 /// cost worth reasoning about.
-fn name_of(caps: &MIDIINCAPSW) -> String {
-    let units: [u16; MAX_PORT_NAME_CHARS] = caps.szPname;
+fn name_of(units: [u16; MAX_PORT_NAME_CHARS]) -> String {
+    // Taken by value so the caller copies the field out of the byte-packed
+    // structure, rather than lending a reference into it — and so that the two
+    // capability structures, which differ in every other field, share this.
     let end = units
         .iter()
         .position(|&unit| unit == 0)
@@ -229,4 +233,88 @@ fn interface_of(device_index: u32) -> Option<String> {
     // An empty string is the same statement as a zero size, and the caller
     // treats it the same way.
     (!interface.is_empty()).then_some(interface)
+}
+
+/// One MIDI output port as Windows describes it.
+///
+/// # Why this is separate from [`PortSnapshot`]
+///
+/// The two read the same shape of data through different WinMM calls, and they
+/// describe different sets: an input is something to listen to and an output is
+/// somewhere to send. Sharing one type would let a value be handed to the wrong
+/// half of the adapter and fail only at run time.
+///
+/// # Why there is no device-interface identity here
+///
+/// `midiOutGetDevCapsW` reports no interface string, and the
+/// `DRV_QUERY_DEVICE_INTERFACE` message used for inputs is not available for
+/// outputs. The most stable thing Windows offers for an output is its name — so
+/// that is what a saved choice is keyed on, and the limitation is stated here
+/// rather than hidden behind a key type that implies more than Windows can give.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputSnapshot {
+    /// Where this port sits in Windows' enumeration **right now**.
+    ///
+    /// Positional and short-lived, exactly as [`PortSnapshot::device_index`] is:
+    /// it is what every WinMM call takes, and it is never persisted.
+    pub device_index: u32,
+    /// Windows' own display name, used verbatim.
+    pub display_name: String,
+}
+
+impl OutputSnapshot {
+    /// Turns this port into the domain's view of a target.
+    #[must_use]
+    pub fn to_target(&self, id: TargetId) -> Target {
+        Target::new(
+            id,
+            TargetKey::DeviceName(self.display_name.clone()),
+            self.display_name.clone(),
+            TargetKind::Destination,
+        )
+    }
+}
+
+/// Every MIDI output port Windows currently reports.
+///
+/// # Why the MIDI Mapper is not here
+///
+/// `midiOutOpen` also accepts the pseudo-device `MIDI_MAPPER`, and enumerating it
+/// would be easy. It is excluded because it is not a device: it is a system
+/// routing setting whose behaviour depends on a control panel this application
+/// does not own. Listing it would put an entry in the picker that does not
+/// correspond to anything the user can point at, and whose destination could
+/// change without anything in this application changing.
+#[must_use]
+pub fn enumerate_outputs() -> Vec<OutputSnapshot> {
+    // SAFETY: takes no arguments, touches no memory this code owns, and is
+    // documented to be callable at any time. It cannot fail.
+    let count = unsafe { midiOutGetNumDevs() };
+
+    (0..count).filter_map(read_output).collect()
+}
+
+/// Reads one output port's capabilities, or [`None`] when Windows will not say.
+///
+/// Skipped rather than listed under a made-up name, for the reason
+/// [`enumerate`] gives: an invented row is a row the user cannot act on.
+fn read_output(device_index: u32) -> Option<OutputSnapshot> {
+    let mut caps = MIDIOUTCAPSW::default();
+    // SAFETY: `caps` is a live, correctly sized `MIDIOUTCAPSW` owned by this
+    // frame, and the size passed is its own. Windows writes only within it.
+    let result = unsafe {
+        midiOutGetDevCapsW(
+            device_index as usize,
+            &raw mut caps,
+            u32::try_from(size_of::<MIDIOUTCAPSW>()).unwrap_or(u32::MAX),
+        )
+    };
+    if result != MMSYSERR_NOERROR {
+        return None;
+    }
+
+    Some(OutputSnapshot {
+        device_index,
+        display_name: name_of(caps.szPname),
+    })
 }

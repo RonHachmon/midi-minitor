@@ -16,13 +16,18 @@
 
 use midi_core::application::capture::CaptureState;
 use midi_core::application::monitor::Monitor;
-use midi_core::application::ports::{ByteFidelity, MidiSystemStatus};
+use midi_core::application::ports::{ByteFidelity, MidiSystemStatus, PublicationSupport};
+use midi_core::application::sender::Sender;
 use midi_core::domain::column::Column;
 use midi_core::domain::event::MidiEvent;
 use midi_core::domain::filter::{ChannelMode, DataPrefixRule, PrefixMode};
 use midi_core::domain::ids::SourceGroupId;
 use midi_core::domain::message::{MessageCategory, MessageKind};
+use midi_core::domain::request::RequestOrigin;
+use midi_core::domain::send_record::SendOutcome;
+use midi_core::domain::sendable::{FieldKind, SendableKind};
 use midi_core::domain::source::{Availability, CheckState, SourceCatalogue};
+use midi_core::domain::target::TargetKind;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -654,4 +659,334 @@ pub const fn wire_group_id(group: SourceGroupId) -> &'static str {
         SourceGroupId::MidiSources => "midiSources",
         SourceGroupId::SpyOnOutput => "spyOnOutput",
     }
+}
+
+/// One place traffic can be sent to.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetDto {
+    /// Session identity, and what the picker sends back.
+    pub id: u32,
+    /// The name to show, as the system or the user supplied it.
+    pub name: String,
+    /// Whether this is a device or this application's own published source.
+    pub kind: TargetKindDto,
+}
+
+/// What sort of place a target is.
+#[derive(Debug, Clone, Copy, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TargetKindDto {
+    /// A MIDI destination the operating system reports.
+    Destination,
+    /// This application's own published source.
+    ///
+    /// The interface must be able to tell this apart, because only this kind
+    /// carries the name the user chose — traffic sent to a destination carries
+    /// whatever origin the system reports for this application.
+    PublishedSource,
+}
+
+impl From<TargetKind> for TargetKindDto {
+    fn from(kind: TargetKind) -> Self {
+        match kind {
+            TargetKind::Destination => Self::Destination,
+            TargetKind::PublishedSource => Self::PublishedSource,
+        }
+    }
+}
+
+/// The target list alone, pushed when devices come and go.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsDto {
+    /// Every target available right now.
+    pub targets: Vec<TargetDto>,
+    /// The chosen target's id, or `null` when nothing is chosen or the choice is
+    /// not currently present.
+    pub chosen: Option<u32>,
+}
+
+/// Whether this platform can publish a MIDI source.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+pub enum PublicationSupportDto {
+    /// It can, and the control is operable.
+    Supported,
+    /// It cannot. The control must not be operable, and must say this.
+    Unsupported {
+        /// What the platform cannot do, and what to do instead.
+        detail: String,
+    },
+}
+
+impl From<&PublicationSupport> for PublicationSupportDto {
+    fn from(support: &PublicationSupport) -> Self {
+        match support {
+            PublicationSupport::Supported => Self::Supported,
+            PublicationSupport::Unsupported { detail } => Self::Unsupported {
+                detail: detail.clone(),
+            },
+        }
+    }
+}
+
+/// The disguise, as the screen shows it.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationDto {
+    /// The name other programs see, and remember their settings against.
+    pub name: String,
+    /// Whether the source is published right now.
+    pub published: bool,
+    /// Whether this platform can publish at all.
+    pub support: PublicationSupportDto,
+    /// Why the last attempt to publish failed, if it did.
+    ///
+    /// Carries the startup restore's failure, which has no command to be
+    /// returned from and would otherwise reach the user as an unexplained
+    /// unpublished source.
+    pub error: Option<String>,
+}
+
+/// One composable message type, for the picker.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SendableKindDto {
+    /// Stable identifier.
+    pub id: String,
+    /// The name shown in the picker.
+    pub label: String,
+}
+
+/// One editable value on the message being composed.
+///
+/// Carries its own label and bounds so the screen renders what it is handed and
+/// holds no table of which message carries which values.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldDto {
+    /// Stable identifier, and what the set command sends back.
+    pub id: String,
+    /// What the value means, in the user's words.
+    pub label: String,
+    /// Lowest accepted value, or `null` for a byte entry.
+    pub min: Option<u16>,
+    /// Highest accepted value, or `null` for a byte entry.
+    pub max: Option<u16>,
+    /// The current value, in the notation the field accepts.
+    pub value: String,
+}
+
+/// The message being composed, and what it will send.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CompositionDto {
+    /// Which message type is composed, or `null` for hand-typed bytes.
+    pub kind: Option<String>,
+    /// Every composable message type, for the picker.
+    pub kinds: Vec<SendableKindDto>,
+    /// The values this message carries. Empty for hand-typed bytes.
+    pub fields: Vec<FieldDto>,
+    /// Exactly what will be transmitted, as spaced uppercase hexadecimal.
+    ///
+    /// Rendered here rather than in TypeScript for the reason every other display
+    /// value is: the bytes are a fact the core owns, and computing them on the far
+    /// side of the boundary would make the preview a second opinion rather than
+    /// the thing itself.
+    pub preview: String,
+    /// Set when the composition cannot currently be encoded.
+    ///
+    /// Never populated by any composition this application can build; present so
+    /// the screen has somewhere to put the truth rather than showing an empty
+    /// preview that looks like an empty message.
+    pub preview_error: Option<String>,
+}
+
+/// One request in the library.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestDto {
+    /// The name, which is also the request's identity.
+    pub name: String,
+    /// What it does, in plain language.
+    pub description: String,
+    /// The bytes it sends at its stored values.
+    pub preview: String,
+    /// Whether the user may rename or delete it.
+    ///
+    /// A rendered fact rather than a rule the screen derives, so there is one
+    /// definition of what a built-in is.
+    pub built_in: bool,
+}
+
+/// One attempted send.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SendRecordDto {
+    /// Identity, and what a re-send names.
+    pub id: u32,
+    /// Pre-formatted `HH:MM:SS.mmm`.
+    pub time: String,
+    /// The target's name as it was at the time of the send.
+    pub target: String,
+    /// What was sent, named the way the event table names it.
+    pub message: String,
+    /// The bytes, as spaced uppercase hexadecimal.
+    pub data: String,
+    /// Why it failed, or `null` when it was transmitted.
+    ///
+    /// Transmitted means the platform accepted the bytes and nothing more —
+    /// whether a receiving program acted on them is unknowable from here, and the
+    /// interface must not imply otherwise.
+    pub failure: Option<String>,
+}
+
+/// Everything the send screen shows.
+///
+/// Returned by every mutating send command, for the reason [`SnapshotDto`] is:
+/// the webview replaces its model rather than patching it, so the two sides
+/// cannot come to disagree about what is composed.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SendViewDto {
+    /// Where traffic can go, and which is chosen.
+    pub targets: TargetsDto,
+    /// The disguise, and whether this platform can offer it.
+    pub publication: PublicationDto,
+    /// The message being built.
+    pub composition: CompositionDto,
+    /// The built-in library and the user's own requests.
+    pub requests: Vec<RequestDto>,
+    /// This session's sends, newest last.
+    pub records: Vec<SendRecordDto>,
+}
+
+/// Formats bytes as spaced uppercase hexadecimal.
+///
+/// Spaced, unlike the raw hex on [`EventDto`], which is separator-free because a
+/// prefix rule matches against it as a plain string. This one is only ever read
+/// by a person, and `90 3C 64` is what a person checks against a specification.
+#[must_use]
+pub fn spaced_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The target list and the current choice.
+#[must_use]
+pub fn targets(sender: &Sender) -> TargetsDto {
+    TargetsDto {
+        targets: sender
+            .targets()
+            .iter()
+            .map(|target| TargetDto {
+                id: target.id.get(),
+                name: target.name.clone(),
+                kind: target.kind.into(),
+            })
+            .collect(),
+        chosen: sender.chosen_target().map(|target| target.id.get()),
+    }
+}
+
+/// The message being composed, with its fields and its byte preview.
+#[must_use]
+pub fn composition(sender: &Sender) -> CompositionDto {
+    let composition = sender.composition();
+    let (preview, preview_error) = match composition.bytes() {
+        Ok(bytes) => (spaced_hex(&bytes), None),
+        Err(error) => (String::new(), Some(error.to_string())),
+    };
+
+    CompositionDto {
+        kind: SendableKind::of(composition.message()).map(|kind| kind.id().to_owned()),
+        kinds: SendableKind::ALL
+            .into_iter()
+            .map(|kind| SendableKindDto {
+                id: kind.id().to_owned(),
+                label: kind.label().to_owned(),
+            })
+            .collect(),
+        fields: composition
+            .fields()
+            .into_iter()
+            .map(|spec| {
+                let (min, max) = match spec.kind {
+                    FieldKind::Number { min, max } => (Some(min), Some(max)),
+                    FieldKind::Bytes => (None, None),
+                };
+                FieldDto {
+                    id: spec.id.id().to_owned(),
+                    label: spec.label.to_owned(),
+                    min,
+                    max,
+                    value: composition.field_value(spec.id).unwrap_or_default(),
+                }
+            })
+            .collect(),
+        preview,
+        preview_error,
+    }
+}
+
+/// This session's sends.
+#[must_use]
+pub fn send_records(sender: &Sender) -> Vec<SendRecordDto> {
+    sender
+        .records()
+        .map(|record| SendRecordDto {
+            id: record.id.get(),
+            time: record.time.to_display(),
+            target: record.target.clone(),
+            message: record.message.display_name().to_owned(),
+            data: spaced_hex(&record.bytes),
+            failure: match &record.outcome {
+                SendOutcome::Sent => None,
+                SendOutcome::Failed { detail } => Some(detail.clone()),
+            },
+        })
+        .collect()
+}
+
+/// The whole send screen model.
+#[must_use]
+pub fn send_view(sender: &Sender) -> SendViewDto {
+    SendViewDto {
+        targets: targets(sender),
+        publication: PublicationDto {
+            name: sender.publication().name.as_str().to_owned(),
+            published: sender.publication().published,
+            support: (&sender.capabilities().publication).into(),
+            error: sender.publication_error().map(str::to_owned),
+        },
+        composition: composition(sender),
+        requests: requests(sender),
+        records: send_records(sender),
+    }
+}
+
+/// The library, built-ins first and then the user's own.
+///
+/// Each entry's preview is the bytes it would send at the values it was stored
+/// with, so the list can be read without loading anything into the composer.
+#[must_use]
+pub fn requests(sender: &Sender) -> Vec<RequestDto> {
+    sender
+        .library()
+        .all()
+        .map(|request| RequestDto {
+            name: request.name.as_str().to_owned(),
+            description: request.description.clone(),
+            preview: request
+                .composition
+                .bytes()
+                .map(|bytes| spaced_hex(&bytes))
+                .unwrap_or_default(),
+            built_in: request.origin == RequestOrigin::BuiltIn,
+        })
+        .collect()
 }

@@ -12,9 +12,12 @@
 //! distinguished by identity rather than by text, which is exactly why identity
 //! and name are different fields on a source.
 
-use coremidi::{Properties, PropertyGetter, Source as CoreSource, Sources};
-use midi_core::domain::ids::{SourceGroupId, SourceId, SourceKey};
+use coremidi::{
+    Destination, Destinations, Properties, PropertyGetter, Source as CoreSource, Sources,
+};
+use midi_core::domain::ids::{SourceGroupId, SourceId, SourceKey, TargetId, TargetKey};
 use midi_core::domain::source::{Availability, Source};
+use midi_core::domain::target::{Target, TargetKind};
 
 /// One endpoint as the operating system describes it.
 ///
@@ -90,5 +93,74 @@ pub fn enumerate() -> Vec<(EndpointSnapshot, CoreSource)> {
     Sources
         .into_iter()
         .filter_map(|source| EndpointSnapshot::read(&source).map(|snapshot| (snapshot, source)))
+        .collect()
+}
+
+/// One destination as the operating system describes it.
+///
+/// # Why this is separate from [`EndpointSnapshot`]
+///
+/// The two read the same properties, but they describe different sets and are
+/// consumed by different ports: a source is something to listen to, and a
+/// destination is somewhere to send. Sharing one type would mean a value that
+/// could be handed to the wrong half of the adapter and only fail at run time.
+/// The properties they read overlapping is not a reason to conflate them.
+///
+/// Note what is missing: no `offline` flag. A destination that is not there is
+/// simply absent from the next scan, because the send screen shows one chosen
+/// target rather than a remembered list, and telling the user it has gone is the
+/// send's job rather than the list's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestinationSnapshot {
+    /// The system-assigned identifier, stable across replug and reboot.
+    pub unique_id: i32,
+    /// The system's own display name, used verbatim, for the same reason source
+    /// names are.
+    pub display_name: String,
+}
+
+impl DestinationSnapshot {
+    /// Reads one destination's properties.
+    ///
+    /// Returns [`None`] when the destination has no unique id, for the reason
+    /// [`EndpointSnapshot::read`] does: a target that cannot be identified cannot
+    /// have a choice saved against it either.
+    fn read(endpoint: &Destination) -> Option<Self> {
+        let unique_id: i32 = Properties::unique_id().value_from(endpoint).ok()?;
+
+        let display_name: String = Properties::display_name()
+            .value_from(endpoint)
+            .or_else(|_| Properties::name().value_from(endpoint))
+            .unwrap_or_else(|_| format!("Unnamed destination {unique_id}"));
+
+        Some(Self {
+            unique_id,
+            display_name,
+        })
+    }
+
+    /// Turns this destination into the domain's view of a target.
+    #[must_use]
+    pub fn to_target(&self, id: TargetId) -> Target {
+        Target::new(
+            id,
+            TargetKey::Endpoint(self.unique_id),
+            self.display_name.clone(),
+            TargetKind::Destination,
+        )
+    }
+}
+
+/// Every MIDI destination the system currently reports.
+///
+/// One entry per *port*, as with sources, and for the same reason: that is how
+/// the system presents them and how anyone routing MIDI thinks about them.
+#[must_use]
+pub fn enumerate_destinations() -> Vec<(DestinationSnapshot, Destination)> {
+    Destinations
+        .into_iter()
+        .filter_map(|destination| {
+            DestinationSnapshot::read(&destination).map(|snapshot| (snapshot, destination))
+        })
         .collect()
 }

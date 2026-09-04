@@ -39,9 +39,13 @@ use std::thread::JoinHandle;
 use midi_core::application::error::CoreError;
 use midi_core::application::ports::{
     ByteFidelity, CatalogueSink, Clock, EventSink, EventSource, PlatformCapabilities,
+    PublicationSupport, Transmitter,
 };
-use midi_core::domain::ids::{EventId, SourceGroupId, SourceId, SourceKey};
+use midi_core::domain::ids::{
+    EventId, PublishedName, SourceGroupId, SourceId, SourceKey, TargetId, TargetKey,
+};
 use midi_core::domain::source::{Availability, Source};
+use midi_core::domain::target::Target;
 use windows::Win32::Media::Audio::{
     midiInClose, midiInOpen, midiInReset, midiInStart, midiInStop, CALLBACK_FUNCTION, HMIDIIN,
 };
@@ -50,6 +54,7 @@ use windows::Win32::Media::MMSYSERR_NOERROR;
 use crate::endpoints::{self, PortSnapshot};
 use crate::notifications::DeviceWatcher;
 use crate::receive::{midi_in_proc, Arrival, CallbackContext, PortHandle, Worker};
+use crate::send::OutputHandle;
 use crate::sysex::BufferPool;
 
 /// The verbatim label of the standalone row this application cannot fill here.
@@ -93,6 +98,21 @@ const BYTE_FIDELITY_DETAIL: &str = concat!(
     "the complete message Windows delivered rather than the exact bytes carried ",
     "on the cable — a message sent using running status arrives with its status ",
     "byte already restored. System Exclusive transfers are exact.",
+);
+
+/// What the publish control says on Windows.
+///
+/// Windows offers no supported way for an application to publish a MIDI source
+/// that other programs can receive from — doing it anyway means shipping a
+/// system-wide kernel driver, which this project does not. The wording is a
+/// deliberate sibling of the `Act as a destination for other programs` message,
+/// because it is the same limitation seen from the other direction, and it names
+/// the way through rather than stopping at the refusal.
+const PUBLICATION_DETAIL: &str = concat!(
+    "Windows has no built-in way for an application to publish a MIDI source ",
+    "other programs can receive from, and doing it anyway would mean installing ",
+    "a system-wide driver. To reach another program, install a MIDI loopback ",
+    "utility — its port appears in this list like any other destination.",
 );
 
 /// What a row says when nothing can tell it apart from another row.
@@ -284,6 +304,13 @@ pub struct WindowsMidiSource {
     worker_thread: Option<JoinHandle<()>>,
     watcher: Option<DeviceWatcher>,
     dropped: Arc<AtomicU32>,
+    /// Session ids for send targets, stable for the same reason source ids are.
+    target_minter: TargetIdMinter,
+    /// The device currently open for sending, if any.
+    ///
+    /// One at a time: the port sends to one target per call, and holding every
+    /// device open would take them all away from other programs for no gain.
+    output: Option<OutputHandle>,
 }
 
 impl WindowsMidiSource {
@@ -303,6 +330,8 @@ impl WindowsMidiSource {
             worker_thread: None,
             watcher: None,
             dropped: Arc::new(AtomicU32::new(0)),
+            target_minter: TargetIdMinter::new(),
+            output: None,
         }
     }
 
@@ -478,6 +507,9 @@ impl EventSource for WindowsMidiSource {
     /// Closes everything and stops the worker. Idempotent.
     fn stop(&mut self) {
         self.watcher = None;
+        // Closing the output device also resets it, releasing any note left
+        // sounding by the last thing sent.
+        self.output = None;
 
         let now = self.clock.now();
         for (id, mut port) in self.ports.drain() {
@@ -567,6 +599,9 @@ impl EventSource for WindowsMidiSource {
     /// arrives as a real byte buffer and is exact.
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
+            publication: PublicationSupport::Unsupported {
+                detail: PUBLICATION_DETAIL.to_owned(),
+            },
             byte_fidelity: ByteFidelity::Assembled {
                 detail: BYTE_FIDELITY_DETAIL.to_owned(),
             },
@@ -592,4 +627,130 @@ impl Drop for WindowsMidiSource {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Assigns and remembers session ids for send targets.
+///
+/// # Why targets need their own minter rather than reusing the source one
+///
+/// Inputs and outputs are different sets, keyed by different types. Sharing one
+/// minter would mean one number space across both, which buys nothing and would
+/// let an id from one list be accepted by the other's lookup.
+///
+/// Simpler than the source minter, and deliberately so: an output has no
+/// unidentifiable case. Windows always reports a name, and the name is the key,
+/// so there is no equivalent of `MintKey`'s positional fallback here.
+#[derive(Debug, Default)]
+struct TargetIdMinter {
+    known: Mutex<HashMap<TargetKey, TargetId>>,
+    next: AtomicU32,
+}
+
+impl TargetIdMinter {
+    /// An empty minter.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// The id for a key, minting one the first time the key is seen.
+    fn id_for(&self, key: TargetKey) -> TargetId {
+        let Ok(mut known) = self.known.lock() else {
+            // Only reachable if a panic poisoned the map. A fresh id costs a
+            // re-render of the picker; refusing would drop the device from it.
+            return TargetId::new(self.next.fetch_add(1, Ordering::SeqCst) + 1);
+        };
+        if let Some(id) = known.get(&key) {
+            return *id;
+        }
+        let id = TargetId::new(self.next.fetch_add(1, Ordering::SeqCst) + 1);
+        known.insert(key, id);
+        id
+    }
+}
+
+impl Transmitter for WindowsMidiSource {
+    /// Every MIDI output port Windows reports.
+    ///
+    /// Never includes a published source: this platform cannot publish one, and
+    /// listing a target that could never be sent to would be exactly the
+    /// operable-but-inert control the specification forbids.
+    ///
+    /// Re-enumerated on each call rather than cached, as the source catalogue is:
+    /// this is the set at the moment of asking.
+    fn targets(&self) -> Vec<Target> {
+        endpoints::enumerate_outputs()
+            .into_iter()
+            .map(|snapshot| {
+                let id = self
+                    .target_minter
+                    .id_for(TargetKey::DeviceName(snapshot.display_name.clone()));
+                snapshot.to_target(id)
+            })
+            .collect()
+    }
+
+    /// Sends the bytes to whichever output device that target names.
+    ///
+    /// # Why the device is re-found on every send
+    ///
+    /// Windows addresses output devices by an index that shifts as devices come
+    /// and go, so an index cached from an earlier scan can quietly come to mean a
+    /// different device. Re-enumerating and matching on the stable key is what
+    /// makes "send to the thing the user chose" true rather than probable.
+    ///
+    /// The open handle is kept across sends but discarded the moment the chosen
+    /// device changes — including when the same name moves to a different index.
+    fn transmit(&mut self, target: TargetId, bytes: &[u8]) -> Result<(), CoreError> {
+        let found = endpoints::enumerate_outputs().into_iter().find(|snapshot| {
+            self.target_minter
+                .id_for(TargetKey::DeviceName(snapshot.display_name.clone()))
+                == target
+        });
+        let Some(snapshot) = found else {
+            return Err(CoreError::UnknownTarget {
+                name: String::new(),
+            });
+        };
+
+        let open_elsewhere = self
+            .output
+            .as_ref()
+            .is_some_and(|handle| handle.device_index() != snapshot.device_index);
+        if open_elsewhere {
+            // Dropping closes and resets the previous device, so a note left
+            // sounding on it is released rather than stranded when the user
+            // switches targets.
+            self.output = None;
+        }
+
+        if self.output.is_none() {
+            self.output = Some(OutputHandle::open(
+                snapshot.device_index,
+                &snapshot.display_name,
+            )?);
+        }
+
+        let Some(handle) = self.output.as_ref() else {
+            return Err(CoreError::TransmitFailed {
+                target: snapshot.display_name.clone(),
+                detail: "the device could not be opened".to_owned(),
+            });
+        };
+        handle.send(bytes, &snapshot.display_name)
+    }
+
+    /// Always refuses: Windows cannot publish a MIDI source.
+    ///
+    /// The interface is expected never to call this, because the control it sits
+    /// behind is not operable on this platform — the limitation reaches the user
+    /// through [`PlatformCapabilities`] before they can try. This is the backstop
+    /// for a stale view, and it carries the same wording so the two cannot drift.
+    fn publish(&mut self, _name: &PublishedName) -> Result<(), CoreError> {
+        Err(CoreError::PublicationUnsupported {
+            detail: PUBLICATION_DETAIL.to_owned(),
+        })
+    }
+
+    /// Nothing to withdraw: nothing can be published on this platform.
+    fn unpublish(&mut self) {}
 }
