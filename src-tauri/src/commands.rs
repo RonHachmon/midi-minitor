@@ -16,6 +16,7 @@ use crate::dto::{
     catalogue, columns, filter_view, CaptureStateDto, CatalogueDto, ChannelModeDto, ColumnDto,
     EventBatchDto, FilterViewDto, MutationResultDto, PrefixModeDto, SnapshotDto,
 };
+use crate::dto::{display_view, DisplayChangeDto, DisplaySettingsDto, DisplayViewDto};
 use crate::dto::{send_view, targets, SendViewDto, TargetsDto};
 use crate::error::{IpcError, IpcResult};
 use crate::state::AppState;
@@ -521,4 +522,64 @@ pub fn delete_request(state: State<'_, AppState>, name: String) -> IpcResult<Sen
     sender.library_mut().delete(&name)?;
     state.persist(&monitor, &sender)?;
     Ok(send_view(&sender))
+}
+
+/// The `Display` tab of the preferences surface.
+///
+/// Read once when the screen mounts. Mirrors [`get_filter_model`] deliberately,
+/// including its reason for existing: the tab's entries and labels come from
+/// Rust so the interface cannot invent an option or reword a control. Those
+/// strings are the normative content of `screenshots/setting.jpg`.
+#[tauri::command]
+#[specta::specta]
+pub fn get_display_model(state: State<'_, AppState>) -> IpcResult<DisplayViewDto> {
+    let monitor = state.monitor()?;
+    Ok(display_view(monitor.display()))
+}
+
+/// Replaces every display setting, and re-renders what the monitor already holds.
+///
+/// # Why the snapshot comes back with it
+///
+/// A format change must apply to events captured before it, not only to those
+/// arriving after. Returning a snapshot built from `Monitor::visible_events` is
+/// what does that, and it costs a return value rather than a mechanism — the
+/// same shape `set_retention_limit` and `clear_events` already use.
+///
+/// Sending both halves in one payload leaves no interval in which the settings
+/// have changed and the visible rows have not.
+///
+/// # Why this does not discard the pending batch
+///
+/// [`set_capture_state`] and [`clear_events`] call `pump.discard_pending()`
+/// because they freeze or empty the list, and delivering queued rows into a list
+/// the user has just frozen would be wrong. A display change does neither: those
+/// events are still arriving normally and must still be shown. The webview
+/// discards only batches at or below the returned snapshot's high-water mark, so
+/// one in flight cannot duplicate a row the snapshot already carries.
+///
+/// # Why the whole settings object rather than one field per command
+///
+/// The tab is one form and no field has a validation error to report — every
+/// value is a generated union, so [`DisplaySettingsDto`] cannot carry an invalid
+/// state. Six commands would be six round trips to the same persistence write
+/// with nothing to distinguish them.
+#[tauri::command]
+#[specta::specta]
+pub fn set_display_settings(
+    state: State<'_, AppState>,
+    settings: DisplaySettingsDto,
+) -> IpcResult<DisplayChangeDto> {
+    let mut monitor = state.monitor()?;
+    monitor.set_display(settings.into());
+    let sender = state.sender()?;
+    // Through `state.persist` rather than writing the monitor's half directly:
+    // that is what folds in the sender's half, and skipping it would erase the
+    // user's chosen target, published name, and every saved request.
+    state.persist(&monitor, &sender)?;
+
+    Ok(DisplayChangeDto {
+        view: display_view(monitor.display()),
+        snapshot: SnapshotDto::from_monitor(&monitor),
+    })
 }

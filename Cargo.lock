@@ -1829,6 +1829,7 @@ name = "midi-monitor"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "midi-core",
  "midi-macos",
  "midi-windows",
@@ -1841,6 +1842,7 @@ dependencies = [
  "tauri-plugin-store",
  "tauri-specta",
  "thiserror 2.0.20",
+ "windows 0.62.2",
 ]
 
 [[package]]

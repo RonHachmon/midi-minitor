@@ -16,7 +16,7 @@ use midi_core::application::error::CoreError;
 use midi_core::application::ports::{Clock, SettingsRepository};
 use midi_core::application::settings::PersistedSettings;
 use midi_core::constants::MILLIS_PER_DAY;
-use midi_core::domain::ids::Timestamp;
+use midi_core::domain::ids::{Arrival, HostTicks, HostTime, TickRate, Timestamp};
 use tauri::{AppHandle, Wry};
 use tauri_plugin_store::StoreExt;
 
@@ -105,5 +105,93 @@ impl Clock for SystemClock {
             .map_or(0, |naive| naive.and_utc().timestamp_millis());
         let elapsed = now.naive_local().and_utc().timestamp_millis() - midnight;
         Timestamp::from_millis_since_midnight(u64::try_from(elapsed).unwrap_or(0) % MILLIS_PER_DAY)
+    }
+
+    /// Both readings of this instant.
+    ///
+    /// Taken in one call so the Time column cannot disagree with itself when the
+    /// user switches between `Clock time` and a `Host time` format.
+    ///
+    /// The host half is always [`HostTime::Stamped`] here. A source that stamps
+    /// its own packets — CoreMIDI does — supplies the zero-means-now case
+    /// itself; this clock is only ever asked what time it is now, and "now" is
+    /// never zero.
+    fn arrival(&self) -> Arrival {
+        Arrival::new(self.now(), HostTime::Stamped(host_ticks()))
+    }
+
+    /// The host clock's rate, read from the platform.
+    ///
+    /// Falls back to [`FALLBACK_TICK_RATE`] rather than failing the launch: a
+    /// platform that cannot report its timebase costs the user the three
+    /// `Host time` formats, and taking the whole monitor down over a column
+    /// format would be wildly out of proportion.
+    fn tick_rate(&self) -> TickRate {
+        TickRate::new(platform_tick_rate()).unwrap_or(TickRate::NANOSECOND)
+    }
+}
+
+/// Reads the host clock.
+///
+/// # Why each platform uses the counter it does
+///
+/// macOS: `mach_absolute_time` is the clock CoreMIDI stamps its packets with, so
+/// a reading taken here and a timestamp taken from a packet are in the same
+/// domain and can be compared.
+///
+/// Windows: the performance counter, read here in the same call the arrival is
+/// recorded. WinMM's own `dwParam2` is deliberately unused — it counts
+/// milliseconds since `midiInStart`, which is coarser and based at a different
+/// instant.
+#[cfg(target_os = "macos")]
+fn host_ticks() -> HostTicks {
+    // SAFETY: `mach_absolute_time` takes no arguments, touches no memory this
+    // caller owns, and has no failure mode. It is `unsafe` only because it is
+    // FFI. Declared by `libc` rather than by hand — see this crate's manifest.
+    HostTicks::new(unsafe { libc::mach_absolute_time() })
+}
+
+#[cfg(target_os = "windows")]
+fn host_ticks() -> HostTicks {
+    use windows::Win32::System::Performance::QueryPerformanceCounter;
+
+    let mut counter: i64 = 0;
+    // SAFETY: the pointer is to a live local that outlives the call, which is
+    // the whole of this function's contract with the OS.
+    let read = unsafe { QueryPerformanceCounter(&mut counter) };
+    match read {
+        Ok(()) => HostTicks::new(counter.unsigned_abs()),
+        // A counter that will not read leaves the reading at zero rather than
+        // taking down the MIDI callback thread. The row still appears; only its
+        // host time is missing, and only if the user asked to see it.
+        Err(_) => HostTicks::new(0),
+    }
+}
+
+/// Reads the host clock's rate in ticks per second, or zero when the platform
+/// will not say.
+#[cfg(target_os = "macos")]
+fn platform_tick_rate() -> u64 {
+    let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
+    // SAFETY: the pointer is to a live local that outlives the call.
+    let read = unsafe { libc::mach_timebase_info(&mut info) };
+    if read != 0 || info.numer == 0 {
+        return 0;
+    }
+    // `numer/denom` converts ticks to nanoseconds, so ticks per second is that
+    // ratio inverted and scaled by a billion.
+    TickRate::NANOSECOND.get() * u64::from(info.denom) / u64::from(info.numer)
+}
+
+#[cfg(target_os = "windows")]
+fn platform_tick_rate() -> u64 {
+    use windows::Win32::System::Performance::QueryPerformanceFrequency;
+
+    let mut frequency: i64 = 0;
+    // SAFETY: the pointer is to a live local that outlives the call.
+    let read = unsafe { QueryPerformanceFrequency(&mut frequency) };
+    match read {
+        Ok(()) => frequency.unsigned_abs(),
+        Err(_) => 0,
     }
 }

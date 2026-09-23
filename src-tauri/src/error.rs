@@ -304,6 +304,16 @@ impl From<CoreError> for IpcError {
             },
             CoreError::MidiSystemUnavailable { detail } => Self::SettingsUnavailable { detail },
 
+            // An unusable host-clock rate is not given its own wire error, for
+            // the same reason the two above are not. It is reachable only at
+            // startup, where the clock falls back to one tick per nanosecond and
+            // the monitor runs normally; every command the webview can send
+            // already holds a rate that was accepted. Reaching here means one
+            // escaped that fallback, so it is reported rather than hidden.
+            CoreError::UnusableTickRate => Self::SettingsUnavailable {
+                detail: "the platform reported an unusable host clock rate".to_owned(),
+            },
+
             CoreError::UnsendableMessage { reason } => Self::UnsendableMessage { reason },
             CoreError::MalformedSendBytes { detail } => Self::MalformedSendBytes { detail },
             CoreError::ValueOutOfRange { field, min, max } => {
