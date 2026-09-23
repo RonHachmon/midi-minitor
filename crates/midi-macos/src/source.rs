@@ -45,7 +45,8 @@ use midi_core::application::ports::{
 use midi_core::domain::decoder::{Decoded, MessageDecoder};
 use midi_core::domain::event::MidiEvent;
 use midi_core::domain::ids::{
-    EventId, PublishedName, SourceGroupId, SourceId, SourceKey, TargetId, TargetKey,
+    Arrival, EventId, HostTicks, HostTime, PublishedName, SourceGroupId, SourceId, SourceKey,
+    TargetId, TargetKey,
 };
 use midi_core::domain::message::{InvalidReason, MidiMessage};
 use midi_core::domain::source::{Availability, Source};
@@ -189,14 +190,46 @@ impl Shared {
         };
         let decoder = decoders.entry(source).or_default();
 
+        // Each outcome is paired with the timestamp of the packet that completed
+        // it, rather than the whole list sharing one reading. A packet list can
+        // carry several packets stamped at different instants, and a System
+        // Exclusive transfer spanning packets completes on the last of them —
+        // which is when the message actually finished, and what the decoder is
+        // reporting.
         let mut outcomes = Vec::new();
         for packet in packets.iter() {
-            outcomes.extend(decoder.feed(packet.data()));
+            let stamp = packet.timestamp();
+            outcomes.extend(
+                decoder
+                    .feed(packet.data())
+                    .into_iter()
+                    .map(|outcome| (stamp, outcome)),
+            );
         }
         drop(decoders);
 
-        for outcome in outcomes {
-            self.deliver(source, outcome);
+        for (stamp, outcome) in outcomes {
+            self.deliver(source, stamp, outcome);
+        }
+    }
+
+    /// Turns a CoreMIDI packet timestamp into an arrival on both clocks.
+    ///
+    /// CoreMIDI documents a timestamp of zero as meaning "now" rather than the
+    /// origin of the clock, so a zero is recorded as such and paired with the
+    /// moment this application took delivery. That is what lets the Time column
+    /// show the receipt time normally and the literal zero under `Expert mode` —
+    /// the reference image's `Zero timestamp shows time received`.
+    fn arrival_from(&self, stamp: u64) -> Arrival {
+        let now = self.clock.arrival();
+        if stamp == 0 {
+            let received = match now.host {
+                HostTime::Stamped(ticks) => ticks,
+                HostTime::ZeroMeaningNow { received } => received,
+            };
+            Arrival::new(now.wall, HostTime::ZeroMeaningNow { received })
+        } else {
+            Arrival::new(now.wall, HostTime::Stamped(HostTicks::new(stamp)))
         }
     }
 
@@ -204,7 +237,7 @@ impl Shared {
     ///
     /// Every outcome becomes a row, including the three that are not valid
     /// messages. That is the point of the decoder reporting them as values.
-    fn deliver(&self, source: SourceId, outcome: Decoded) {
+    fn deliver(&self, source: SourceId, stamp: u64, outcome: Decoded) {
         let (message, raw) = match outcome {
             Decoded::Message { message, raw } => (message, raw),
             Decoded::Invalid { reason, raw } => (
@@ -231,7 +264,13 @@ impl Shared {
         *next = next.next();
         drop(next);
 
-        (self.events)(MidiEvent::new(id, self.clock.now(), source, message, raw));
+        (self.events)(MidiEvent::new(
+            id,
+            self.arrival_from(stamp),
+            source,
+            message,
+            raw,
+        ));
     }
 
     /// Flushes a departing source's half-finished transfer, if it had one.
@@ -244,7 +283,10 @@ impl Shared {
         drop(decoders);
 
         if let Some(outcome) = outcome {
-            self.deliver(source, outcome);
+            // A transfer flushed because its device vanished has no packet of its
+            // own, so it is stamped "now" — CoreMIDI's zero — and shows the moment
+            // the loss was noticed.
+            self.deliver(source, 0, outcome);
         }
     }
 }
