@@ -4,9 +4,26 @@ import type { ColumnDto, EventDto } from "../bindings";
 import { useMonitorStore } from "../store";
 import { ColumnMenu } from "./ColumnMenu";
 
-/** Fixed width for each column, keyed by its wire identifier. */
+/**
+ * Width for each column, keyed by its wire identifier.
+ *
+ * # Why Time is the one column allowed to grow
+ *
+ * `108px` is what `screenshots/data.png` shows, and it is exactly enough for the
+ * `HH:MM:SS.mmm` that column held when the reference was captured. Display
+ * preferences can now put a host-clock reading there instead — thirteen digits
+ * for a tick count, more again for seconds carried to the nanosecond — and a
+ * fixed width truncated those to an ellipsis, which defeats the whole reason
+ * someone selects a host format.
+ *
+ * `minmax(108px, max-content)` keeps the depicted width in the depicted state:
+ * under `Clock time` every value is the same length and the column stays at
+ * 108px, so the reference image still matches. It grows only for a format the
+ * screenshots never depicted, which is the additive-surface rule working as
+ * intended rather than an exception to it.
+ */
 const COLUMN_WIDTH: Record<string, string> = {
-  time: "108px",
+  time: "minmax(108px, max-content)",
   source: "210px",
   message: "150px",
   chan: "52px",

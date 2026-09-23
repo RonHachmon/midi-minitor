@@ -85,6 +85,22 @@
 }
 
 /*
+ * The selected tab of a tab strip, such as `Display` in the preferences.
+ *
+ * A separate selector from the one above rather than a shared class, because
+ * the two states are not the same statement: `aria-pressed` says a toggle is
+ * engaged, `aria-selected` says which of several panels is showing, and a tab
+ * that used `aria-pressed` would be lying to a screen reader about what it is.
+ * They happen to look alike here, and that is a styling decision, not a reason
+ * to merge them.
+ */
+.chrome-button[aria-selected="true"] {
+  background: var(--color-control-active);
+  border-color: var(--color-ink-faint);
+  font-weight: 500;
+}
+
+/*
  * The unadorned controls — a dismiss cross, a rule's delete cross. They carry no
  * border at rest so they stay out of the way, and earn one on hover so it is
  * obvious they are hit targets rather than decoration.

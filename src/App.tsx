@@ -1,19 +1,22 @@
 import { useEffect } from "react";
 import { MonitorScreen } from "./screens/MonitorScreen";
 import { SendScreen } from "./screens/SendScreen";
+import { SettingsScreen } from "./screens/SettingsScreen";
 import { startStream, subscribeCatalogue } from "./ipc";
 import { useSendStore, type Screen } from "./sendStore";
 
 /**
- * The window, and the switch between its two screens.
+ * The window, and the switch between its three screens.
  *
  * # Why the subscriptions live here rather than in the monitor screen
  *
- * They must outlive whichever screen is showing. Moving to the send screen
- * unmounts the monitor, and if the event stream were subscribed there, that would
- * silently stop the application taking in traffic — the opposite of the promise
- * that using one screen does not disturb the other. Held at this level, the
- * stream is opened once when the window opens and never torn down by navigation.
+ * They must outlive whichever screen is showing. Moving to the send screen or
+ * the settings screen unmounts the monitor, and if the event stream were
+ * subscribed there, that would silently stop the application taking in traffic —
+ * the opposite of the promise that using one screen does not disturb the other.
+ * Held at this level, the stream is opened once when the window opens and never
+ * torn down by navigation. The third screen inherits that guarantee for free,
+ * which is the point of having put the subscriptions here.
  *
  * The monitor's own state — retained events, selections, filters, whether it is
  * paused — is not at risk either way: it lives in Rust, so unmounting a component
@@ -46,14 +49,22 @@ export function App() {
       >
         <ScreenTab screen="monitor" label="Monitor" current={screen} onPick={setScreen} />
         <ScreenTab screen="send" label="Send" current={screen} onPick={setScreen} />
+        <ScreenTab screen="settings" label="Settings" current={screen} onPick={setScreen} />
       </nav>
 
-      {screen === "monitor" ? <MonitorScreen /> : <SendScreen />}
+      {screen === "monitor" && <MonitorScreen />}
+      {screen === "send" && <SendScreen />}
+      {screen === "settings" && <SettingsScreen />}
     </div>
   );
 }
 
-/** One screen button, pressed when it is the screen being shown. */
+/**
+ * One screen button, pressed when it is the screen being shown.
+ *
+ * `aria-pressed` rather than a tab role: these are the window's mode switches,
+ * and the existing `chrome-button` styling already answers to the pressed state.
+ */
 function ScreenTab({
   screen,
   label,
