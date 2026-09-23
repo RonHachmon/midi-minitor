@@ -14,10 +14,11 @@ use super::error::CoreError;
 use super::ports::{MidiSystemStatus, PlatformCapabilities};
 use super::settings::{PersistedSettings, SendSettings};
 use crate::domain::column::{Column, ColumnVisibility};
+use crate::domain::display::DisplaySettings;
 use crate::domain::event::MidiEvent;
 use crate::domain::event_log::EventLog;
 use crate::domain::filter::{DataPrefixRule, FilterSettings};
-use crate::domain::ids::{HexPrefix, RetentionLimit, SourceGroupId, SourceId, SourceKey};
+use crate::domain::ids::{HexPrefix, RetentionLimit, SourceGroupId, SourceId, SourceKey, TickRate};
 use crate::domain::source::{CheckState, Source, SourceCatalogue};
 
 /// Holds everything the monitor knows and answers everything the interface asks.
@@ -57,6 +58,25 @@ pub struct Monitor {
     /// that decision belongs here with the rest of them. Session-only: it is
     /// deliberately absent from [`PersistedSettings`].
     capture: CaptureState,
+    /// How retained and arriving events are written.
+    ///
+    /// # Why the monitor holds this rather than the IPC surface
+    ///
+    /// Changing a format must re-render events that were captured under the old
+    /// one, so whatever renders a snapshot needs the settings in hand. Holding
+    /// them beside the log makes that automatic: every snapshot is built from
+    /// the same two pieces of state, and there is no moment where one has
+    /// changed and the other has not.
+    display: DisplaySettings,
+    /// How many host-clock ticks pass in a second, for the `Host time` formats.
+    ///
+    /// # Why this is held rather than read per event
+    ///
+    /// It is fixed for the life of the process, so storing it on every event
+    /// would be one constant copied a thousand times, and reading it at render
+    /// time would mean a domain rule calling the platform. Read once from the
+    /// [`super::ports::Clock`] and kept here, it is neither.
+    tick_rate: TickRate,
 }
 
 impl Monitor {
@@ -79,6 +99,7 @@ impl Monitor {
         saved: Option<PersistedSettings>,
         status: MidiSystemStatus,
         capabilities: PlatformCapabilities,
+        tick_rate: TickRate,
     ) -> Self {
         let mut catalogue = SourceCatalogue::new(sources);
         let (settings, remembered) = match saved {
@@ -99,11 +120,38 @@ impl Monitor {
             log: EventLog::new(settings.retention),
             filter: settings.filter,
             columns: settings.columns,
+            display: settings.display,
             remembered,
             status,
             capabilities,
             capture: CaptureState::default(),
+            tick_rate,
         }
+    }
+
+    /// How events are currently written.
+    #[must_use]
+    pub const fn display(&self) -> DisplaySettings {
+        self.display
+    }
+
+    /// The host-clock rate the `Host time` formats convert through.
+    #[must_use]
+    pub const fn tick_rate(&self) -> TickRate {
+        self.tick_rate
+    }
+
+    /// Replaces how events are written.
+    ///
+    /// # Why this touches nothing else
+    ///
+    /// A display setting governs how what arrived is *drawn*, never which events
+    /// arrived or which of them are listed. It deliberately does not reach the
+    /// log, the filter, or the capture state: retained events must survive the
+    /// change unmoved, unreordered, and undropped, and a narrower filter must
+    /// not follow from a wider number base.
+    pub fn set_display(&mut self, display: DisplaySettings) {
+        self.display = display;
     }
 
     /// Applies a newly discovered set of sources after a hot-plug change.
@@ -401,6 +449,7 @@ impl Monitor {
             filter: self.filter.clone(),
             columns: self.columns.clone(),
             retention: self.log.limit(),
+            display: self.display,
             // The monitor does not own the send screen's state and must not
             // invent it. The composition root fills this half in from the
             // `Sender` before saving — see `PersistedSettings::with_send`, which

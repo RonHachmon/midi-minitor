@@ -7,7 +7,9 @@
 
 pub mod column;
 pub mod composition;
+pub mod controller;
 pub mod decoder;
+pub mod display;
 pub mod encoder;
 pub mod event;
 pub mod event_log;
@@ -15,6 +17,7 @@ pub mod filter;
 pub mod ids;
 pub mod message;
 pub mod publication;
+pub mod rendering;
 pub mod request;
 pub mod send_record;
 pub mod sendable;

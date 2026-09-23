@@ -7,7 +7,7 @@
 
 use crate::application::error::CoreError;
 use crate::domain::event::MidiEvent;
-use crate::domain::ids::{PublishedName, SourceId, TargetId, Timestamp};
+use crate::domain::ids::{Arrival, PublishedName, SourceId, TargetId, TickRate, Timestamp};
 use crate::domain::source::Source;
 use crate::domain::target::Target;
 
@@ -230,9 +230,35 @@ pub trait SettingsRepository: Send + Sync {
 /// clock itself — a domain that reaches for wall-clock time cannot be driven
 /// deterministically from anywhere else. This port keeps that dependency at the
 /// edge where it belongs.
+/// # Why `arrival` exists beside `now`
+///
+/// The Time column can show either a wall clock or the host clock, and the two
+/// readings must describe the same instant — taking them through two calls would
+/// let a scheduler interleave between them, so the column would disagree with
+/// itself the moment the user switched format. [`Clock::arrival`] takes both at
+/// once and is what every *received* event is stamped with.
+///
+/// [`Clock::now`] survives for the three sites that stamp **send records**,
+/// which have only a wall-clock column. Making them build an [`Arrival`] and
+/// discard half of it would be ceremony.
+///
+/// # Why the rate is reported here rather than converted here
+///
+/// This port reports readings; [`crate::domain::rendering`] converts and formats
+/// them. A clock that formatted would put a display rule in the application
+/// layer, and a display rule is a domain fact.
 pub trait Clock: Send + Sync {
     /// The current time, as milliseconds since local midnight.
     fn now(&self) -> Timestamp;
+
+    /// Both readings of the current moment, taken together.
+    fn arrival(&self) -> Arrival;
+
+    /// How many host-clock ticks pass in a second.
+    ///
+    /// Fixed for the life of the process on every platform this runs on, so
+    /// callers read it once and hold it rather than asking per event.
+    fn tick_rate(&self) -> TickRate;
 }
 
 /// Somewhere MIDI messages go.
