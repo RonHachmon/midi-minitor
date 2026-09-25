@@ -36,7 +36,7 @@ export function AppMark() {
   return (
     <img
       src={markUrl}
-      alt="MIDI Monitor"
+      alt="MIDI minitor"
       width={260}
       height={187}
       className="block h-auto w-[260px]"
