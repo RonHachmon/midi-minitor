@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { MonitorScreen } from "./screens/MonitorScreen";
 import { SendScreen } from "./screens/SendScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
-import { startStream, subscribeCatalogue } from "./ipc";
+import { loadOtherView, startStream, subscribeCatalogue } from "./ipc";
 import { useSendStore, type Screen } from "./sendStore";
 
 /**
@@ -40,6 +40,12 @@ export function App() {
   // catalogue too, so there is no moment where the panel is subscribed but
   // empty.
   useEffect(() => void subscribeCatalogue(), []);
+
+  // The theme is a property of the window, not of the preferences screen, so it
+  // is read here for the same reason the subscriptions are: it has to outlive
+  // whichever screen is showing, and a user who never opens the preferences must
+  // still get the palette they chose last time.
+  useEffect(() => void loadOtherView(), []);
 
   return (
     <div className="flex h-full flex-col bg-(--color-chrome)">

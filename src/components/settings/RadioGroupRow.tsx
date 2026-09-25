@@ -23,15 +23,28 @@ import type { DisplayGroupDto } from "../../bindings";
 export function RadioGroupRow({
   group,
   onPick,
+  aligned = true,
 }: {
   group: DisplayGroupDto;
   onPick: (optionId: string) => void;
+  /**
+   * Whether the label column takes the fixed width that gives several groups a
+   * shared right edge.
+   *
+   * On by default, because the reference image's five labels line up and that
+   * only happens if every one of them reserves the width of the longest. A tab
+   * with a single group has nothing to align to, and the reserved width is then
+   * dead space to the left of the only label — which a centred panel counts,
+   * pushing the visible row off centre by half of it.
+   */
+  aligned?: boolean;
 }) {
   return (
     <div className="flex items-start gap-3 py-1.5">
-      {/* Right-aligned, as the reference image sets every group label. The fixed
-          width is what makes the five labels share one right edge. */}
-      <div className="w-[7.5rem] shrink-0 pt-px text-right text-[13px] leading-5">
+      {/* Right-aligned, as the reference image sets every group label. */}
+      <div
+        className={`${aligned ? "w-[7.5rem]" : ""} shrink-0 pt-px text-right text-[13px] leading-5`}
+      >
         <div>{group.label}</div>
         {group.secondLine !== null && <div>{group.secondLine}</div>}
       </div>

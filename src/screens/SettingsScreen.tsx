@@ -1,11 +1,18 @@
 import { useEffect } from "react";
+import type {
+  DisplayViewDto,
+  OtherViewDto,
+  PreferencesTabDto,
+} from "../bindings";
 import { DisplayTab } from "../components/settings/DisplayTab";
+import { OtherTab } from "../components/settings/OtherTab";
 import { UnavailableTab } from "../components/settings/UnavailableTab";
-import { loadDisplayView } from "../ipc";
+import { loadDisplayView, loadOtherView } from "../ipc";
 import { currentTab, useSettingsStore } from "../settingsStore";
 
 /**
- * The preferences surface: three tabs, of which `Display` is implemented.
+ * The preferences surface: three tabs, of which `Display` and `Other` are
+ * implemented.
  *
  * # Two recorded deviations from the reference image
  *
@@ -31,20 +38,27 @@ import { currentTab, useSettingsStore } from "../settingsStore";
  * display entirely, which is worth more than the round trip saves.
  */
 /**
- * The tab the application mark is shown on.
- *
- * Matched against the id the core supplies rather than against a position, so
- * reordering the tabs there cannot silently move the artwork to another one.
+ * The tab ids, matched against what the core supplies rather than against a
+ * position, so reordering the tabs there cannot silently move a panel — or the
+ * application mark — onto a different one.
  */
+const DISPLAY_TAB = "display";
+/** The tab the application mark is shown on. */
 const SOURCES_TAB = "sources";
+/** The tab the theme picker is on. */
+const OTHER_TAB = "other";
 
 export function SettingsScreen() {
   const view = useSettingsStore((state) => state.view);
   const tab = useSettingsStore((state) => state.tab);
   const setTab = useSettingsStore((state) => state.setTab);
   const message = useSettingsStore((state) => state.message);
+  const otherView = useSettingsStore((state) => state.otherView);
 
-  useEffect(() => void loadDisplayView(), []);
+  useEffect(() => {
+    void loadDisplayView();
+    void loadOtherView();
+  }, []);
 
   if (view === null) {
     // The honest state before the core has answered: the screen has asked and is
@@ -82,16 +96,57 @@ export function SettingsScreen() {
 
       {message !== null && <Message text={message} />}
 
-      {showing?.available === true ? (
-        <DisplayTab view={view} />
-      ) : (
-        <UnavailableTab
-          note={showing?.unavailableNote ?? ""}
-          mark={showing?.id === SOURCES_TAB}
-        />
-      )}
+      <TabBody showing={showing} view={view} otherView={otherView} />
     </div>
   );
+}
+
+/**
+ * The panel for the tab currently showing.
+ *
+ * # Why this dispatches on the id rather than on the availability flag
+ *
+ * With one implemented tab, `available` was enough to choose between a panel and
+ * an apology. With two it says only that *some* panel exists — which one is the
+ * tab's own identity. Matching on the id means a third tab is a case here rather
+ * than a restructuring.
+ *
+ * A tab the core marks available that this build has no panel for renders
+ * nothing. The core has no apology to offer for it — `unavailableNote` is null
+ * precisely because it believes the tab works — and inventing a sentence here
+ * would be the webview wording a control's state, which is the one thing this
+ * screen does not do. The strip still works, so the user is one click from
+ * somewhere real.
+ */
+function TabBody({
+  showing,
+  view,
+  otherView,
+}: {
+  showing: PreferencesTabDto | undefined;
+  view: DisplayViewDto;
+  otherView: OtherViewDto | null;
+}) {
+  if (showing?.available !== true) {
+    return (
+      <UnavailableTab
+        note={showing?.unavailableNote ?? ""}
+        mark={showing?.id === SOURCES_TAB}
+      />
+    );
+  }
+
+  switch (showing.id) {
+    case DISPLAY_TAB:
+      return <DisplayTab view={view} />;
+    case OTHER_TAB:
+      // `null` while the read is in flight, which is the honest state: the
+      // screen has asked and not been answered. Normally it is already filled,
+      // because the window reads this at startup to paint itself.
+      return otherView === null ? null : <OtherTab view={otherView} />;
+    default:
+      return null;
+  }
 }
 
 /** A failure shown beside the controls rather than in the window banner. */

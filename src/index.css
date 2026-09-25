@@ -307,8 +307,109 @@ body {
 }
 
 /*
- * The reference is a macOS window in the light appearance, and reproducing it
- * is the requirement. A dark repaint would be a different design, so the app
- * commits to this one and states the background explicitly rather than
- * inheriting the host's theme.
+ * The `Raver` theme.
+ *
+ * This block supersedes a comment that used to stand here saying a dark repaint
+ * would be a different design and the app committed to the light one. The half
+ * of that argument which still holds is the important half, and it is worth
+ * restating: reproducing the reference is the requirement, `Default` *is* that
+ * reproduction, it is what the screenshots are checked against, and it is what
+ * the app paints unless the user asks otherwise. What changed is only that the
+ * user may now ask. Neither theme is ever chosen by `prefers-color-scheme` —
+ * this window states its palette and does not inherit the host's.
+ *
+ * # Why an override block rather than a second stylesheet
+ *
+ * Every colour in this window is already referenced as `var(--color-…)`: the
+ * arbitrary-value syntax `bg-(--color-chrome)` compiles to a live var reference,
+ * not a resolved value. Re-declaring the tokens under a selector is therefore
+ * the entire mechanism — roughly a hundred and twenty references across the
+ * components repaint, none of them are edited, and none of them learn that a
+ * second theme exists.
+ *
+ * It must stay **unlayered**. Tailwind emits `@theme` into `@layer theme`, and
+ * unlayered rules beat every layer regardless of specificity, which is why the
+ * controls above are written this way too.
+ *
+ * # Why the attribute value is the wire id
+ *
+ * `raver` is what `ThemeDto` serialises to, so the webview writes the value it
+ * received straight onto the element with no translation table in between. A
+ * value this block does not recognise — a stale cache, a document written by a
+ * later version — simply fails to match and leaves `Default` standing, which is
+ * the same tolerance `forgiving` gives the stored document in Rust.
+ *
+ * # Where the colours come from
+ *
+ * `app-icon.svg`'s own gradient stops, all three of them. `--color-accent` is
+ * #ff2d95 and `--color-danger` is #ff5a5f, verbatim rather than approximations,
+ * and #ff8c1a carries the far end of `--rule-image` below — without which the
+ * orange third of the logo appeared nowhere in the window at all, because a
+ * one-slot accent has no room for a three-stop ramp.
+ *
+ * The ground is those hues at very
+ * low chroma — never pure black, which makes saturated neon halate against its
+ * own edges — and the neon is kept to accents, because a dense table read for
+ * long stretches cannot be saturated everywhere without fatiguing.
+ *
+ * Every text pair here clears WCAG AA against every ground it can sit on; the
+ * tightest is `--color-ink-faint` at 4.96:1. That token was lightened from the
+ * first draft specifically to clear it, because it carries real body text (the
+ * empty-state line, the byte-fidelity note) and not just hints.
+ *
+ * # The one honest compromise
+ *
+ * On a palette running pink through orange there is no hue left that reads as
+ * "error". `--color-danger` is therefore a neighbour of `--color-accent`, and a
+ * failure is distinguished by its tint block rather than by hue contrast. That
+ * is a real limitation of colouring from this icon, accepted deliberately.
  */
+:root[data-theme="raver"] {
+  --color-chrome: #1a0f1c;
+  --color-chrome-border: #3a1f33;
+  --color-list: #120a14;
+  --color-header: #241329;
+  --color-hairline: #3a2440;
+  --color-ink: #ffe9f3;
+  --color-ink-soft: #d3a2bd;
+  --color-ink-faint: #a985a0;
+  --color-accent: #ff2d95;
+  --color-danger: #ff5a5f;
+  --color-danger-tint: #3d1420;
+
+  --color-control: #2a1530;
+  --color-control-hover: #3a1f3f;
+  --color-control-active: #4f2b52;
+  --color-field: #0f0812;
+  /* Warmer than the header it matches in the default theme, so a hovered row
+     leans toward the orange end rather than repeating the accent. */
+  --color-row-hover: #2e1a2f;
+
+  --shadow-menu: 0 4px 10px -2px rgb(0 0 0 / 0.55);
+  --shadow-dialog: 0 12px 32px rgb(0 0 0 / 0.6);
+  --color-scrim: rgb(10 4 12 / 0.62);
+
+  /* The logo's three stops, in its own order, as an actual gradient.
+     This is where the full ramp lives: the accent tokens can only ever show one
+     colour each, so mapping pink to `--color-accent` and coral to
+     `--color-danger` left the orange with nowhere to appear at all. A divider
+     and a selected control are surfaces that carry a gradient without any text
+     having to sit on top of one. */
+  --rule-image: linear-gradient(90deg, #ff2d95 0%, #ff5a5f 50%, #ff8c1a 100%);
+  --control-active-image: linear-gradient(
+    90deg,
+    rgb(255 45 149 / 0.32) 0%,
+    rgb(255 90 95 / 0.28) 50%,
+    rgb(255 140 26 / 0.32) 100%
+  );
+
+  /* Without this the checkboxes, radios, selects, number spinners, scrollbars
+     and caret stay light, and the dark window is lit from inside by white
+     boxes. */
+  color-scheme: dark;
+
+  /* Set only here. In `Default` the reference shows macOS drawing its own accent
+     on the radios, and claiming that for the app's blue would be a fidelity
+     defect; here there is no reference to depart from. */
+  accent-color: var(--color-accent);
+}
