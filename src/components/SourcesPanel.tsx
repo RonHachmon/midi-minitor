@@ -43,7 +43,7 @@ export function SourcesPanel() {
   const hasAnySource = groups.some((group) => group.sources.length > 0);
 
   return (
-    <div className="max-h-[168px] overflow-auto rounded-[3px] border border-(--color-chrome-border) bg-white px-1.5 py-1">
+    <div className="max-h-[168px] overflow-auto rounded-[3px] border border-(--color-chrome-border) bg-(--color-list) px-1.5 py-1">
       {systemUnavailable !== null ? (
         <p className="px-1 py-1 text-(--color-ink-faint)">
           The MIDI system could not be reached: {systemUnavailable}

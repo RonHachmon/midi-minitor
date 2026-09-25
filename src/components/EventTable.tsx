@@ -192,7 +192,10 @@ export function EventTable() {
         clickable. Overlaying it keeps the header's tracks aligned with the body
         rows, which is what matters for the columns to line up.
       */}
-      <div className="relative shrink-0 border-b border-(--color-hairline) bg-(--color-header)">
+      {/* `rule-ramp` lets a theme draw this divider as the brand gradient. It
+          resolves to nothing in the default theme, where the plain hairline
+          border below is what shows. */}
+      <div className="rule-ramp relative shrink-0 border-b border-(--color-hairline) bg-(--color-header)">
         <div
           className="grid items-center pr-6 text-[13px] text-(--color-ink-soft)"
           style={{ gridTemplateColumns: template }}

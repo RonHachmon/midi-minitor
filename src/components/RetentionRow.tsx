@@ -69,7 +69,7 @@ export function RetentionRow() {
             }
           }}
           inputMode="numeric"
-          className="w-[92px] rounded-[3px] border border-(--color-chrome-border) bg-white px-2 py-[2px] text-right text-[13px] outline-none focus:border-(--color-accent)"
+          className="w-[92px] rounded-[3px] border border-(--color-chrome-border) bg-(--color-field) px-2 py-[2px] text-right text-[13px] outline-none focus:border-(--color-accent)"
         />
         events
       </label>
