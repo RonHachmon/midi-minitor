@@ -83,6 +83,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             commands::set_column_visibility,
             commands::get_display_model,
             commands::set_display_settings,
+            commands::get_other_model,
+            commands::set_appearance_settings,
             commands::get_send_view,
             commands::subscribe_send_targets,
             commands::set_send_target,

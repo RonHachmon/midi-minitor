@@ -17,6 +17,7 @@ use crate::dto::{
     EventBatchDto, FilterViewDto, MutationResultDto, PrefixModeDto, SnapshotDto,
 };
 use crate::dto::{display_view, DisplayChangeDto, DisplaySettingsDto, DisplayViewDto};
+use crate::dto::{other_view, AppearanceSettingsDto, OtherViewDto};
 use crate::dto::{send_view, targets, SendViewDto, TargetsDto};
 use crate::error::{IpcError, IpcResult};
 use crate::state::AppState;
@@ -582,4 +583,47 @@ pub fn set_display_settings(
         view: display_view(monitor.display()),
         snapshot: SnapshotDto::from_monitor(&monitor),
     })
+}
+
+/// The `Other` tab of the preferences surface.
+///
+/// Read when the preferences screen mounts, and once at startup — the window is
+/// painted in the chosen theme whichever screen is showing, so the chooser
+/// living on this tab does not mean the value is only wanted while it is open.
+#[tauri::command]
+#[specta::specta]
+pub fn get_other_model(state: State<'_, AppState>) -> IpcResult<OtherViewDto> {
+    let monitor = state.monitor()?;
+    Ok(other_view(monitor.appearance()))
+}
+
+/// Replaces every appearance setting.
+///
+/// # Why no snapshot comes back, unlike [`set_display_settings`]
+///
+/// That command returns one because a format change must apply to events
+/// captured before it, so the retained log has to be re-rendered. A theme
+/// changes no event's text — every colour the window uses is a custom property
+/// the stylesheet resolves live, so the rows already on screen repaint without
+/// being rebuilt. Returning a snapshot here would re-render up to a hundred
+/// thousand rows to produce byte-identical strings, and would drag the event
+/// stream's high-water mark into a decision that has nothing to do with events.
+///
+/// The tab still comes back, for the reason `set_column_visibility` returns its
+/// list: the core decides which option is selected, so the webview redraws from
+/// the answer rather than from what it assumed it had sent.
+#[tauri::command]
+#[specta::specta]
+pub fn set_appearance_settings(
+    state: State<'_, AppState>,
+    settings: AppearanceSettingsDto,
+) -> IpcResult<OtherViewDto> {
+    let mut monitor = state.monitor()?;
+    monitor.set_appearance(settings.into());
+    let sender = state.sender()?;
+    // Through `state.persist` for the same reason as above: it folds in the
+    // sender's half, and skipping it would erase the user's saved requests.
+    state.persist(&monitor, &sender)?;
+
+    Ok(other_view(monitor.appearance()))
 }

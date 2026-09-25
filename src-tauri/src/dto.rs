@@ -18,6 +18,9 @@ use midi_core::application::capture::CaptureState;
 use midi_core::application::monitor::Monitor;
 use midi_core::application::ports::{ByteFidelity, MidiSystemStatus, PublicationSupport};
 use midi_core::application::sender::Sender;
+// Aliased because `group_label` is already taken by `display`'s. The alias keeps
+// the five existing `group_label::…` references in `display_view` untouched.
+use midi_core::domain::appearance::{group_label as appearance_label, AppearanceSettings, Theme};
 use midi_core::domain::column::Column;
 use midi_core::domain::display::{
     group_label, ControllerFormat, DataFormat, DisplaySettings, ExpertMode, NoteFormat,
@@ -1231,19 +1234,80 @@ impl From<ProgramNumberingDto> for ProgramNumbering {
     }
 }
 
+/// Wire form of [`Theme`].
+///
+/// # Why the spellings matter beyond serde
+///
+/// These serialise to `"default"` and `"raver"`, and the webview writes the
+/// value it receives straight into the `data-theme` attribute that
+/// `src/index.css` selects on. There is deliberately no translation table on
+/// either side, so renaming a variant or changing the rename attribute silently
+/// stops the stylesheet matching and leaves the window on the default palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeDto {
+    /// The reference look.
+    Default,
+    /// The icon's neon palette.
+    Raver,
+}
+
+impl From<Theme> for ThemeDto {
+    fn from(value: Theme) -> Self {
+        match value {
+            Theme::Default => Self::Default,
+            Theme::Raver => Self::Raver,
+        }
+    }
+}
+
+impl From<ThemeDto> for Theme {
+    fn from(value: ThemeDto) -> Self {
+        match value {
+            ThemeDto::Default => Self::Default,
+            ThemeDto::Raver => Self::Raver,
+        }
+    }
+}
+
+/// Every appearance choice, as the webview echoes it back.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppearanceSettingsDto {
+    /// Which palette the window is painted in.
+    pub theme: ThemeDto,
+}
+
+impl From<AppearanceSettings> for AppearanceSettingsDto {
+    fn from(value: AppearanceSettings) -> Self {
+        Self {
+            theme: value.theme.into(),
+        }
+    }
+}
+
+impl From<AppearanceSettingsDto> for AppearanceSettings {
+    fn from(value: AppearanceSettingsDto) -> Self {
+        Self {
+            theme: value.theme.into(),
+        }
+    }
+}
+
 /// One selectable option within a radio group.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayOptionDto {
     /// The wire value this option selects, matching the generated union member.
     pub id: String,
-    /// The verbatim label from `screenshots/setting.jpg`.
+    /// The label, verbatim from whichever authority names it — the reference
+    /// image for the `Display` tab's options, the core for ones it never fixed.
     pub label: String,
     /// Whether this is the option currently in effect.
     pub selected: bool,
 }
 
-/// One labelled radio group on the `Display` tab.
+/// One labelled radio group on a preferences tab.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayGroupDto {
@@ -1266,8 +1330,10 @@ pub struct DisplayGroupDto {
 /// # Why the unimplemented tabs are described here rather than in the webview
 ///
 /// The core decides which tabs are usable, so the interface cannot render an
-/// operable control for one that does nothing. Filling `Sources` in later is
-/// then a flag and a list of groups, not a restructuring of the screen.
+/// operable control for one that does nothing. Filling a tab in later is then a
+/// flag and a list of groups, not a restructuring of the screen — which is
+/// exactly how `Other` gained its theme picker: this struct did not change, the
+/// flag flipped and [`other_view`] supplied the groups.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PreferencesTabDto {
@@ -1323,8 +1389,55 @@ pub struct DisplayChangeDto {
 /// lives, so the message is useful rather than merely apologetic.
 const SOURCES_TAB_UNAVAILABLE: &str = "Source preferences are not available in this version. Choose which sources to monitor from the Sources section of the Monitor screen.";
 
-/// What the `Other` tab says for itself.
-const OTHER_TAB_UNAVAILABLE: &str = "Other preferences are not available in this version.";
+/// The whole `Other` tab, as the webview renders it.
+///
+/// # Why this is not [`DisplayViewDto`]
+///
+/// Three of that type's fields — `expert_label`, `expert_enabled`,
+/// `expert_notes` — describe a checkbox this tab does not have, and reusing it
+/// would mean inventing values for them. The two pieces worth sharing are
+/// [`DisplayGroupDto`] and [`DisplayOptionDto`], and those are shared verbatim:
+/// `RadioGroupRow` renders this tab with no change at all.
+///
+/// # Why the tab list is not repeated here
+///
+/// [`DisplayViewDto::tabs`] already states which tabs exist, and the preferences
+/// screen holds it for the strip regardless of which tab is showing. A second
+/// copy could disagree with the first, and whichever tab happened to be open
+/// would decide which copy won.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherViewDto {
+    /// The radio groups on this tab.
+    pub groups: Vec<DisplayGroupDto>,
+    /// The same state as values, for the webview to echo back on a change.
+    pub settings: AppearanceSettingsDto,
+}
+
+/// Builds the `Other` tab for the webview.
+///
+/// There is deliberately no `AppearanceChangeDto` beside [`DisplayChangeDto`]:
+/// that type exists only to carry a re-rendered snapshot, and a theme change
+/// re-renders nothing.
+#[must_use]
+pub fn other_view(appearance: AppearanceSettings) -> OtherViewDto {
+    OtherViewDto {
+        groups: vec![DisplayGroupDto {
+            id: "theme".to_owned(),
+            label: appearance_label::THEME.to_owned(),
+            second_line: None,
+            options: Theme::ALL
+                .into_iter()
+                .map(|option| DisplayOptionDto {
+                    id: wire_id(ThemeDto::from(option)),
+                    label: option.label().to_owned(),
+                    selected: option == appearance.theme,
+                })
+                .collect(),
+        }],
+        settings: appearance.into(),
+    }
+}
 
 /// Builds the `Display` tab for the webview.
 ///
@@ -1355,8 +1468,8 @@ pub fn display_view(settings: DisplaySettings) -> DisplayViewDto {
             PreferencesTabDto {
                 id: "other".to_owned(),
                 label: "Other".to_owned(),
-                available: false,
-                unavailable_note: Some(OTHER_TAB_UNAVAILABLE.to_owned()),
+                available: true,
+                unavailable_note: None,
             },
         ],
         groups: vec![
