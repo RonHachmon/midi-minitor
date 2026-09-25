@@ -1,151 +1,71 @@
 # MIDI Monitor
 
-A desktop app for macOS and Windows that shows the MIDI messages arriving on your machine, live.
+A desktop application for macOS and Windows that displays live MIDI messages.
 
-Connect a keyboard, a control surface, or any MIDI interface. Play it, and every message
-appears in a table: the time, the source, the message type, the channel, and the raw bytes.
+Connect a keyboard, controller, or MIDI interface and start playing. The application displays incoming messages in a real-time table with time, source, message type, channel, and raw byte data.
 
 ## What it does
 
-- **Lists your real MIDI ports.** The Sources list matches what your operating system
-  reports. Nothing is invented. If no device is attached, the list is empty and says so.
-- **Follows devices as you plug and unplug them.** The list updates while the app runs.
-  Your selection comes back when a device returns.
-- **Shows what actually arrived.** Malformed bytes and incomplete messages are listed too,
-  not hidden. That is the point of a monitor.
-- **Receives from other apps** — macOS only. Turn on `Act as a destination for other
-  programs`, and the monitor appears as a MIDI destination that other software can send to.
-- **Filters the view.** By source, by message type, by channel, or by hex prefix rules. You
-  can also hide columns and set how many events to keep.
-- **Pauses without losing anything.** Press `Pause` and the list stops moving. Every event
-  already received stays exactly where it is, however long you leave it and however fast the
-  device is sending — because pausing stops the monitor *recording*, so nothing new can push
-  those rows past the retention limit. The trade is that traffic arriving during a pause is
-  not recorded; the row says so while it is paused.
-- **Builds a list of data rules.** Under `Data starts with`, add a prefix as either
-  `Show only` or `Hide`, and add as many as you need. Each rule is listed and each can be
-  deleted on its own. Prefixes match nibbles, so `9` covers `90` through `9F`.
-  A rule that repeats or contradicts one already listed is refused, and the message names
-  both rules — the list is kept free of contradictions rather than silently picking a winner.
-  One consequence follows from that and is deliberate: while a `Show only` rule is in the
-  list, `Hide` rules have nothing left to remove.
+- **Detects active MIDI ports:** Displays exact ports reported by your operating system. If no device is connected, the list shows as empty.
+- **Supports hot-plugging:** Automatically updates device lists when hardware is connected or disconnected. Preserves selected preferences when a device reconnects.
+- **Shows all incoming data:** Displays complete, incomplete, and malformed MIDI messages for thorough debugging.
+- **Acts as a MIDI destination (macOS only):** Enable *Act as a destination for other programs* to receive MIDI directly from other applications.
+- **Filters incoming messages:** Filter data by source, type, channel, or hexadecimal prefix. Customize visible columns and row buffer limits.
+- **Pauses data capture:** Use `Pause` to freeze the display without losing stored rows. Incoming messages sent during a pause are not recorded.
+- **Manages filter rules:** Add custom prefix rules under *Data starts with* using `Show only` or `Hide`. Invalid, conflicting, or duplicate rules are automatically rejected with an explanation.
+- **Sends MIDI messages:** Open the secondary panel to transmit 15 built-in preset requests (e.g., `Note On`, `All Notes Off`) or create custom messages with manual channel and value settings. Includes an outgoing activity log to easily resend past messages.
+- **Publishes a virtual source (macOS only):** Enable *Publish a source other programs can receive from* to broadcast custom MIDI outputs to other music software.
 
-- **Sends MIDI too.** The window has a second screen. Pick where to send, pick one of fifteen
-  built-in requests — `Note On`, `All Notes Off`, `Start`, `Identity Request`, and the rest — and
-  send it. Or build any message from named controls: choose the type, set the channel and the
-  values, and watch the exact bytes appear before you send them. Every send says whether it went,
-  and is listed afterwards with its time and its bytes so you can send it again.
-- **Can appear as a MIDI source** — macOS only. Turn on `Publish a source other programs can
-  receive from`, give it a name, and other software on the machine lists that name among its MIDI
-  inputs and can receive from it. Sending makes the monitor look like a device that is not there.
+> **Note:** Monitoring outgoing traffic from other software is not currently supported.
 
-Watching another app's *outgoing* traffic is not built yet. That control is on screen and
-tells you it is unavailable.
+---
 
-## What differs between the two platforms
+## Platform Differences
 
-Every difference is stated in the window itself, on the control it affects. There are three.
+All platform limitations are clearly indicated inside the user interface.
 
-**`Act as a destination for other programs` does not work on Windows.** Windows has no
-built-in way for an application to publish a MIDI destination other programs can send to,
-and doing it anyway would mean installing a system-wide driver. The row stays where it is,
-cannot be switched on, and says so. To monitor what another program sends, install a MIDI
-loopback utility — its ports show up under `MIDI sources` like any other port.
+### 1. Destination Mode (macOS only)
+*Act as a destination for other programs* is unavailable on Windows because the operating system requires a custom driver to create virtual destinations. On Windows, use a third-party MIDI loopback utility to route software traffic into the monitor.
 
-**The `Data` column shows assembled messages on Windows.** Every byte shown is a byte the
-app actually received, in the order received. But Windows expands running status before any
-application sees it, so a message sent without a repeated status byte reaches the app with
-that byte already restored — the byte *count* is the message Windows delivered, not what the
-cable carried. System Exclusive is exact on both platforms. The window says this next to the
-`Data` column on Windows, and does not say it on macOS, where it is not true.
+### 2. Message Format
+Windows automatically expands running status bytes before passing data to applications. The byte count displayed on Windows reflects what the operating system delivers rather than raw cable traffic. System Exclusive (SysEx) messages are identical across both platforms.
 
-**Sending under a chosen name does not work on Windows.** macOS lets an application publish a MIDI
-source that other programs see as a device; Windows has no equivalent that does not mean shipping a
-system-wide driver — the same limitation, from the other direction, as the destination row above.
-The control on the send screen cannot be switched on and says so. Sending itself works in full: to
-reach another program, install a MIDI loopback utility and send to its port, which appears in the
-target list like any other destination.
+### 3. Virtual Sources (macOS only)
+Windows cannot publish virtual sources without custom system drivers. On Windows, select a port from a third-party loopback utility to send data to other applications.
 
-One thing publishing a source does **not** do is configure the program at the other end. It makes
-the monitor appear as a device; that program still has to be told to listen to it and taught what
-each message means. A send reports that the bytes were *transmitted*, which is what this
-application actually knows — never that anything received or acted on them.
+*Publishing a virtual source does not configure external applications automatically. Target software must be configured manually to listen to the port.*
+
+---
 
 ## Requirements
 
-Rust (stable) and Node 20 or newer on both platforms, plus:
+Requires **Rust (stable)** and **Node.js 20+** on both platforms.
 
-**macOS** — Xcode Command Line Tools.
+### macOS
+- Xcode Command Line Tools
 
-**Windows** — Windows 10 (1809 or later) or Windows 11, 64-bit; the MSVC Rust toolchain;
-Microsoft C++ Build Tools ("Desktop development with C++"); and the WebView2 Runtime, which
-ships with Windows 11 and current Windows 10 — install it if the window never appears.
+### Windows
+- Windows 10 (1809+) or Windows 11 (64-bit)
+- MSVC Rust toolchain
+- Microsoft C++ Build Tools (*Desktop development with C++*)
+- WebView2 Runtime (included in Windows 11 and recent Windows 10 updates)
 
-No MIDI permission prompt exists on Windows. A Bluetooth MIDI device must be paired in
-Windows Settings first; until it is, Windows does not report it and the app correctly does
-not list it.
+*Bluetooth MIDI devices must be paired in Windows Settings before they appear in the app.*
 
-### No MIDI hardware?
+---
 
-**macOS** — open **Audio MIDI Setup**, then *Window → Show MIDI Studio → IAC Driver*, and put
-the device online. That gives you a real port to test with.
+## Testing Without MIDI Hardware
 
-**Windows** — the IAC Driver has no Windows equivalent. Recent Windows 11 has built-in
-loopback endpoints that appear under `MIDI sources` with nothing to install. Otherwise
-install a MIDI loopback utility (loopMIDI is the common one) and drive it with any program
-that can send to a MIDI port.
+- **macOS:** Open **Audio MIDI Setup**, go to *Window → Show MIDI Studio → IAC Driver*, and set the device to **Online** to create a test port.
+- **Windows:** Use built-in Windows 11 loopback endpoints or install a loopback tool like **loopMIDI**.
 
-Do **not** reach for `Microsoft GS Wavetable Synth`. Every Windows machine has it and it
-looks like the obvious candidate, but it is a MIDI *output*. This app lists inputs, so it
-will never appear there.
+> Do not use `Microsoft GS Wavetable Synth`. It is an output device and will not appear in input lists.
 
-## Run it
+---
 
+## Development Setup
+
+### Run the App
 ```bash
 npm install
 npm run tauri dev
-```
-
-The app window opens. Expand **Sources**, tick a device, and play.
-
-## Build a release app
-
-```bash
-npm run tauri build
-```
-
-## Checks
-
-The project has no test suite. The compiler and a manual pass are the safety net.
-
-```bash
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
-npm run typecheck
-```
-
-`src/bindings.ts` is generated when the app starts in debug mode. If `npm run typecheck`
-fails with `Cannot find module './bindings'`, run `npm run tauri dev` once first.
-
-**Build both adapters.** A macOS developer never compiles `midi-windows` and a Windows
-developer never compiles `midi-macos`, so a change can look clean on one platform and break
-the other. From Windows, the macOS crates can be checked without a Mac:
-
-```bash
-rustup target add x86_64-apple-darwin
-cargo clippy -p midi-core -p midi-macos --target x86_64-apple-darwin -- -D warnings
-```
-
-The Tauri shell itself cannot be cross-checked this way — one of its macOS dependencies
-needs a C compiler for that target — so the shell still has to be built on each platform.
-
-## Layout
-
-| Path | What is inside |
-|---|---|
-| `crates/midi-core` | Domain and application logic. No platform code. |
-| `crates/midi-macos` | The CoreMIDI adapter. Real device access on macOS. |
-| `crates/midi-windows` | The WinMM adapter. Real device access on Windows. |
-| `src-tauri` | The Tauri shell. Commands, events, settings. |
-| `src` | The React user interface. |
-| `specs` | Feature specs, plans, and manual test steps. |
