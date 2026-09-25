@@ -5,6 +5,7 @@
 //! delivered the bytes — which is what let the same rules carry over unchanged
 //! when real device input replaced generated traffic.
 
+pub mod appearance;
 pub mod column;
 pub mod composition;
 pub mod controller;

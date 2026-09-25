@@ -13,6 +13,7 @@ use super::capture::CaptureState;
 use super::error::CoreError;
 use super::ports::{MidiSystemStatus, PlatformCapabilities};
 use super::settings::{PersistedSettings, SendSettings};
+use crate::domain::appearance::AppearanceSettings;
 use crate::domain::column::{Column, ColumnVisibility};
 use crate::domain::display::DisplaySettings;
 use crate::domain::event::MidiEvent;
@@ -68,6 +69,19 @@ pub struct Monitor {
     /// the same two pieces of state, and there is no moment where one has
     /// changed and the other has not.
     display: DisplaySettings,
+    /// Which palette the window is painted in.
+    ///
+    /// # Why this is held here despite nothing in this type reading it
+    ///
+    /// Unlike every other field, no method here consults it — a theme reaches
+    /// the stylesheet, not the event text. It is here because
+    /// [`Self::persisted_settings`] is where the monitor's half of the settings
+    /// document is assembled, and a value held anywhere else would need a second
+    /// `PersistedSettings::with_…` fold-in. That is precisely the step
+    /// [`PersistedSettings::with_send`] exists to make explicit because it is so
+    /// easy to forget, and forgetting it silently erases the user's data. One
+    /// such hazard in this codebase is enough.
+    appearance: AppearanceSettings,
     /// How many host-clock ticks pass in a second, for the `Host time` formats.
     ///
     /// # Why this is held rather than read per event
@@ -121,6 +135,7 @@ impl Monitor {
             filter: settings.filter,
             columns: settings.columns,
             display: settings.display,
+            appearance: settings.appearance,
             remembered,
             status,
             capabilities,
@@ -152,6 +167,22 @@ impl Monitor {
     /// not follow from a wider number base.
     pub fn set_display(&mut self, display: DisplaySettings) {
         self.display = display;
+    }
+
+    /// Which palette the window is painted in.
+    #[must_use]
+    pub const fn appearance(&self) -> AppearanceSettings {
+        self.appearance
+    }
+
+    /// Replaces how the window is painted.
+    ///
+    /// Touches nothing else, and unlike [`Self::set_display`] it does not even
+    /// change what a later snapshot would say: the event text is identical
+    /// either side of this call. It is a stored preference passing through on
+    /// its way to `persisted_settings`.
+    pub fn set_appearance(&mut self, appearance: AppearanceSettings) {
+        self.appearance = appearance;
     }
 
     /// Applies a newly discovered set of sources after a hot-plug change.
@@ -450,6 +481,7 @@ impl Monitor {
             columns: self.columns.clone(),
             retention: self.log.limit(),
             display: self.display,
+            appearance: self.appearance,
             // The monitor does not own the send screen's state and must not
             // invent it. The composition root fills this half in from the
             // `Sender` before saving — see `PersistedSettings::with_send`, which

@@ -371,7 +371,15 @@ impl Default for DisplaySettings {
 /// The untagged enum is what makes recovery possible: serde buffers the value,
 /// tries the real type, and falls through to [`serde::de::IgnoredAny`], which
 /// accepts anything. One bad field therefore costs that field and nothing else.
-fn forgiving<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+///
+/// # Why it is visible outside this module
+///
+/// It is generic over the field's type and knows nothing about display formats,
+/// so [`super::appearance`] reads its own setting through this same function
+/// rather than keeping a second copy of the untagged-enum trick. Widening it was
+/// preferable to duplicating it: the argument above is subtle enough that two
+/// copies would eventually disagree about it.
+pub(crate) fn forgiving<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,

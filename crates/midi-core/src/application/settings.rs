@@ -7,6 +7,7 @@
 //! window would present stale data as live, so the event log is deliberately
 //! session-only and this type carries configuration alone.
 
+use crate::domain::appearance::AppearanceSettings;
 use crate::domain::column::ColumnVisibility;
 use crate::domain::composition::PersistedComposition;
 use crate::domain::display::DisplaySettings;
@@ -50,6 +51,18 @@ pub struct PersistedSettings {
     /// along with it.
     #[serde(default)]
     pub display: DisplaySettings,
+    /// How the window is painted.
+    ///
+    /// `#[serde(default)]` for the same reason as the two fields either side of
+    /// it: this feature adds a field and changes none, so a document written by
+    /// any earlier version has no `appearance` key, supplies the default —
+    /// which is the reference look — and keeps every other setting intact.
+    ///
+    /// Nested rather than a bare `theme` at the top level so a second appearance
+    /// setting extends this block instead of widening the document, and so a
+    /// defect confined to it cannot take the rest down.
+    #[serde(default)]
+    pub appearance: AppearanceSettings,
     /// The send screen's state.
     ///
     /// `#[serde(default)]` is the whole of this feature's compatibility story,
@@ -79,6 +92,7 @@ impl Default for PersistedSettings {
             columns: ColumnVisibility::default(),
             retention: RetentionLimit::default(),
             display: DisplaySettings::default(),
+            appearance: AppearanceSettings::default(),
             send: SendSettings::default(),
         }
     }
