@@ -7,8 +7,10 @@
 //! window would present stale data as live, so the event log is deliberately
 //! session-only and this type carries configuration alone.
 
+use crate::domain::appearance::AppearanceSettings;
 use crate::domain::column::ColumnVisibility;
 use crate::domain::composition::PersistedComposition;
+use crate::domain::display::DisplaySettings;
 use crate::domain::filter::FilterSettings;
 use crate::domain::ids::{RequestName, RetentionLimit, SourceKey, TargetKey};
 use crate::domain::publication::Publication;
@@ -32,6 +34,35 @@ pub struct PersistedSettings {
     pub columns: ColumnVisibility,
     /// The retention cap.
     pub retention: RetentionLimit,
+    /// How the event table writes what it holds.
+    ///
+    /// `#[serde(default)]` for the reason `send` records: this feature *adds* a
+    /// field and changes none, so a document written by any earlier version has
+    /// no `display` key, supplies the default, and keeps every other setting
+    /// intact. Writing a migration here would be dead code.
+    ///
+    /// The per-field tolerance inside [`DisplaySettings`] is the other half of
+    /// the story, and it is the half that matters more. `#[serde(default)]`
+    /// answers a *missing* key; it does nothing for one that is present and
+    /// unparseable. Because `StoreSettingsRepository::load` treats an unreadable
+    /// document as absent, a single unrecognised value here — a setting written
+    /// by a later version, a hand-edited file — would otherwise discard the
+    /// user's filters, columns, retention, source selections, and saved requests
+    /// along with it.
+    #[serde(default)]
+    pub display: DisplaySettings,
+    /// How the window is painted.
+    ///
+    /// `#[serde(default)]` for the same reason as the two fields either side of
+    /// it: this feature adds a field and changes none, so a document written by
+    /// any earlier version has no `appearance` key, supplies the default —
+    /// which is the reference look — and keeps every other setting intact.
+    ///
+    /// Nested rather than a bare `theme` at the top level so a second appearance
+    /// setting extends this block instead of widening the document, and so a
+    /// defect confined to it cannot take the rest down.
+    #[serde(default)]
+    pub appearance: AppearanceSettings,
     /// The send screen's state.
     ///
     /// `#[serde(default)]` is the whole of this feature's compatibility story,
@@ -60,6 +91,8 @@ impl Default for PersistedSettings {
             filter: FilterSettings::default(),
             columns: ColumnVisibility::default(),
             retention: RetentionLimit::default(),
+            display: DisplaySettings::default(),
+            appearance: AppearanceSettings::default(),
             send: SendSettings::default(),
         }
     }

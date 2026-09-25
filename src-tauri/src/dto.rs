@@ -18,11 +18,19 @@ use midi_core::application::capture::CaptureState;
 use midi_core::application::monitor::Monitor;
 use midi_core::application::ports::{ByteFidelity, MidiSystemStatus, PublicationSupport};
 use midi_core::application::sender::Sender;
+// Aliased because `group_label` is already taken by `display`'s. The alias keeps
+// the five existing `group_label::…` references in `display_view` untouched.
+use midi_core::domain::appearance::{group_label as appearance_label, AppearanceSettings, Theme};
 use midi_core::domain::column::Column;
+use midi_core::domain::display::{
+    group_label, ControllerFormat, DataFormat, DisplaySettings, ExpertMode, NoteFormat,
+    ProgramNumbering, TimeFormat,
+};
 use midi_core::domain::event::MidiEvent;
 use midi_core::domain::filter::{ChannelMode, DataPrefixRule, PrefixMode};
-use midi_core::domain::ids::SourceGroupId;
+use midi_core::domain::ids::{SourceGroupId, TickRate};
 use midi_core::domain::message::{MessageCategory, MessageKind};
+use midi_core::domain::rendering;
 use midi_core::domain::request::RequestOrigin;
 use midi_core::domain::send_record::SendOutcome;
 use midi_core::domain::sendable::{FieldKind, SendableKind};
@@ -37,7 +45,7 @@ use specta::Type;
 pub struct EventDto {
     /// Arrival order; the list key and the stream's high-water mark.
     pub id: u32,
-    /// Pre-formatted `HH:MM:SS.mmm`.
+    /// Pre-formatted per the chosen time format.
     pub time: String,
     /// The Source column's label, such as `From MidiKeys`.
     pub source: String,
@@ -56,16 +64,29 @@ pub struct EventDto {
 
 impl EventDto {
     /// Renders one event for the wire.
-    pub fn from_event(event: &MidiEvent, catalogue: &SourceCatalogue) -> Self {
+    ///
+    /// # Why the display settings are a parameter
+    ///
+    /// The three cells below are rendered from them, and a row must be
+    /// re-renderable at any time — a format chosen now applies to events
+    /// captured before it. Passing the settings in rather than baking a
+    /// rendering at capture is what lets `set_display_settings` rebuild a whole
+    /// snapshot from events the monitor already holds.
+    pub fn from_event(
+        event: &MidiEvent,
+        catalogue: &SourceCatalogue,
+        settings: DisplaySettings,
+        rate: TickRate,
+    ) -> Self {
         Self {
             id: event.id.get(),
-            time: event.timestamp.to_display(),
+            time: rendering::time_display(event, settings, rate),
             source: catalogue
                 .event_label(event.source)
                 .unwrap_or_else(|| "(unknown source)".to_owned()),
-            message: event.message.display_name().to_owned(),
+            message: rendering::message_display(event, settings).to_owned(),
             channel: event.channel().map(|channel| channel.get()),
-            data: event.message.data_display(),
+            data: rendering::data_display(event, settings),
             raw_hex: event.raw_hex(),
         }
     }
@@ -484,7 +505,14 @@ impl SnapshotDto {
     pub fn from_monitor(monitor: &Monitor) -> Self {
         let events: Vec<EventDto> = monitor
             .visible_events()
-            .map(|event| EventDto::from_event(event, monitor.catalogue()))
+            .map(|event| {
+                EventDto::from_event(
+                    event,
+                    monitor.catalogue(),
+                    monitor.display(),
+                    monitor.tick_rate(),
+                )
+            })
             .collect();
         let high_water_mark = events.last().map(|event| event.id);
 
@@ -826,7 +854,7 @@ pub struct RequestDto {
 pub struct SendRecordDto {
     /// Identity, and what a re-send names.
     pub id: u32,
-    /// Pre-formatted `HH:MM:SS.mmm`.
+    /// Pre-formatted per the chosen time format.
     pub time: String,
     /// The target's name as it was at the time of the send.
     pub target: String,
@@ -989,4 +1017,552 @@ pub fn requests(sender: &Sender) -> Vec<RequestDto> {
             built_in: request.origin == RequestOrigin::BuiltIn,
         })
         .collect()
+}
+
+/// The six display choices, as the webview holds them.
+///
+/// # Why every field is a generated union rather than a string
+///
+/// A bare `String` would let the webview compose a value the core has no variant
+/// for, and the mistake would surface as a silent fallback at render time.
+/// Generated unions make it a TypeScript compile error instead — which, with no
+/// test suite, is the only place it can be caught.
+///
+/// `expert` crosses as a boolean because it is a checkbox on the wire; it
+/// becomes [`ExpertMode`] at this boundary, which is what a translation layer is
+/// for.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplaySettingsDto {
+    /// What the Time column shows.
+    pub time: TimeFormatDto,
+    /// How note numbers are written.
+    pub note: NoteFormatDto,
+    /// How controller numbers are written.
+    pub controller: ControllerFormatDto,
+    /// The base for every remaining value.
+    pub data: DataFormatDto,
+    /// Whether programs are counted from one or from zero.
+    pub program: ProgramNumberingDto,
+    /// Whether the monitor's conveniences are suppressed.
+    pub expert: bool,
+}
+
+/// Wire form of [`TimeFormat`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TimeFormatDto {
+    /// `Clock time`.
+    ClockTime,
+    /// `Host time (integer)`.
+    HostInteger,
+    /// `Host time (seconds)`.
+    HostSeconds,
+    /// `Host time (nanoseconds)`.
+    HostNanoseconds,
+}
+
+/// Wire form of [`NoteFormat`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteFormatDto {
+    /// `Note (Middle C = C3)`.
+    NameMiddleC3,
+    /// `Note (Middle C = C4)`.
+    NameMiddleC4,
+    /// `Decimal number`.
+    Decimal,
+    /// `Hexadecimal number`.
+    Hexadecimal,
+}
+
+/// Wire form of [`ControllerFormat`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ControllerFormatDto {
+    /// `Standard name`.
+    StandardName,
+    /// `Decimal number`.
+    Decimal,
+    /// `Hexadecimal number`.
+    Hexadecimal,
+}
+
+/// Wire form of [`DataFormat`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DataFormatDto {
+    /// `Decimal number`.
+    Decimal,
+    /// `Hexadecimal number`.
+    Hexadecimal,
+}
+
+/// Wire form of [`ProgramNumbering`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ProgramNumberingDto {
+    /// `1 – 128 (Standard)`.
+    FromOne,
+    /// `0 – 127 (Less common)`.
+    FromZero,
+}
+
+impl From<DisplaySettings> for DisplaySettingsDto {
+    fn from(settings: DisplaySettings) -> Self {
+        Self {
+            time: settings.time.into(),
+            note: settings.note.into(),
+            controller: settings.controller.into(),
+            data: settings.data.into(),
+            program: settings.program.into(),
+            expert: settings.expert.is_on(),
+        }
+    }
+}
+
+impl From<DisplaySettingsDto> for DisplaySettings {
+    fn from(dto: DisplaySettingsDto) -> Self {
+        Self {
+            time: dto.time.into(),
+            note: dto.note.into(),
+            controller: dto.controller.into(),
+            data: dto.data.into(),
+            program: dto.program.into(),
+            expert: ExpertMode::from(dto.expert),
+        }
+    }
+}
+
+impl From<TimeFormat> for TimeFormatDto {
+    fn from(value: TimeFormat) -> Self {
+        match value {
+            TimeFormat::ClockTime => Self::ClockTime,
+            TimeFormat::HostInteger => Self::HostInteger,
+            TimeFormat::HostSeconds => Self::HostSeconds,
+            TimeFormat::HostNanoseconds => Self::HostNanoseconds,
+        }
+    }
+}
+
+impl From<TimeFormatDto> for TimeFormat {
+    fn from(value: TimeFormatDto) -> Self {
+        match value {
+            TimeFormatDto::ClockTime => Self::ClockTime,
+            TimeFormatDto::HostInteger => Self::HostInteger,
+            TimeFormatDto::HostSeconds => Self::HostSeconds,
+            TimeFormatDto::HostNanoseconds => Self::HostNanoseconds,
+        }
+    }
+}
+
+impl From<NoteFormat> for NoteFormatDto {
+    fn from(value: NoteFormat) -> Self {
+        match value {
+            NoteFormat::NameMiddleC3 => Self::NameMiddleC3,
+            NoteFormat::NameMiddleC4 => Self::NameMiddleC4,
+            NoteFormat::Decimal => Self::Decimal,
+            NoteFormat::Hexadecimal => Self::Hexadecimal,
+        }
+    }
+}
+
+impl From<NoteFormatDto> for NoteFormat {
+    fn from(value: NoteFormatDto) -> Self {
+        match value {
+            NoteFormatDto::NameMiddleC3 => Self::NameMiddleC3,
+            NoteFormatDto::NameMiddleC4 => Self::NameMiddleC4,
+            NoteFormatDto::Decimal => Self::Decimal,
+            NoteFormatDto::Hexadecimal => Self::Hexadecimal,
+        }
+    }
+}
+
+impl From<ControllerFormat> for ControllerFormatDto {
+    fn from(value: ControllerFormat) -> Self {
+        match value {
+            ControllerFormat::StandardName => Self::StandardName,
+            ControllerFormat::Decimal => Self::Decimal,
+            ControllerFormat::Hexadecimal => Self::Hexadecimal,
+        }
+    }
+}
+
+impl From<ControllerFormatDto> for ControllerFormat {
+    fn from(value: ControllerFormatDto) -> Self {
+        match value {
+            ControllerFormatDto::StandardName => Self::StandardName,
+            ControllerFormatDto::Decimal => Self::Decimal,
+            ControllerFormatDto::Hexadecimal => Self::Hexadecimal,
+        }
+    }
+}
+
+impl From<DataFormat> for DataFormatDto {
+    fn from(value: DataFormat) -> Self {
+        match value {
+            DataFormat::Decimal => Self::Decimal,
+            DataFormat::Hexadecimal => Self::Hexadecimal,
+        }
+    }
+}
+
+impl From<DataFormatDto> for DataFormat {
+    fn from(value: DataFormatDto) -> Self {
+        match value {
+            DataFormatDto::Decimal => Self::Decimal,
+            DataFormatDto::Hexadecimal => Self::Hexadecimal,
+        }
+    }
+}
+
+impl From<ProgramNumbering> for ProgramNumberingDto {
+    fn from(value: ProgramNumbering) -> Self {
+        match value {
+            ProgramNumbering::FromOne => Self::FromOne,
+            ProgramNumbering::FromZero => Self::FromZero,
+        }
+    }
+}
+
+impl From<ProgramNumberingDto> for ProgramNumbering {
+    fn from(value: ProgramNumberingDto) -> Self {
+        match value {
+            ProgramNumberingDto::FromOne => Self::FromOne,
+            ProgramNumberingDto::FromZero => Self::FromZero,
+        }
+    }
+}
+
+/// Wire form of [`Theme`].
+///
+/// # Why the spellings matter beyond serde
+///
+/// These serialise to `"default"` and `"raver"`, and the webview writes the
+/// value it receives straight into the `data-theme` attribute that
+/// `src/index.css` selects on. There is deliberately no translation table on
+/// either side, so renaming a variant or changing the rename attribute silently
+/// stops the stylesheet matching and leaves the window on the default palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeDto {
+    /// The reference look.
+    Default,
+    /// The icon's neon palette.
+    Raver,
+}
+
+impl From<Theme> for ThemeDto {
+    fn from(value: Theme) -> Self {
+        match value {
+            Theme::Default => Self::Default,
+            Theme::Raver => Self::Raver,
+        }
+    }
+}
+
+impl From<ThemeDto> for Theme {
+    fn from(value: ThemeDto) -> Self {
+        match value {
+            ThemeDto::Default => Self::Default,
+            ThemeDto::Raver => Self::Raver,
+        }
+    }
+}
+
+/// Every appearance choice, as the webview echoes it back.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppearanceSettingsDto {
+    /// Which palette the window is painted in.
+    pub theme: ThemeDto,
+}
+
+impl From<AppearanceSettings> for AppearanceSettingsDto {
+    fn from(value: AppearanceSettings) -> Self {
+        Self {
+            theme: value.theme.into(),
+        }
+    }
+}
+
+impl From<AppearanceSettingsDto> for AppearanceSettings {
+    fn from(value: AppearanceSettingsDto) -> Self {
+        Self {
+            theme: value.theme.into(),
+        }
+    }
+}
+
+/// One selectable option within a radio group.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayOptionDto {
+    /// The wire value this option selects, matching the generated union member.
+    pub id: String,
+    /// The label, verbatim from whichever authority names it — the reference
+    /// image for the `Display` tab's options, the core for ones it never fixed.
+    pub label: String,
+    /// Whether this is the option currently in effect.
+    pub selected: bool,
+}
+
+/// One labelled radio group on a preferences tab.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayGroupDto {
+    /// Which setting this group sets.
+    pub id: String,
+    /// The verbatim group label, such as `Time format`.
+    pub label: String,
+    /// A second line beneath the label, or `null`.
+    ///
+    /// `(Decimal)` for `Program number`, which the reference image sets on two
+    /// lines. Null rather than an empty string, so the renderer cannot print a
+    /// stray blank line for the other four.
+    pub second_line: Option<String>,
+    /// The options, in the reference image's order.
+    pub options: Vec<DisplayOptionDto>,
+}
+
+/// One tab of the preferences surface.
+///
+/// # Why the unimplemented tabs are described here rather than in the webview
+///
+/// The core decides which tabs are usable, so the interface cannot render an
+/// operable control for one that does nothing. Filling a tab in later is then a
+/// flag and a list of groups, not a restructuring of the screen — which is
+/// exactly how `Other` gained its theme picker: this struct did not change, the
+/// flag flipped and [`other_view`] supplied the groups.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PreferencesTabDto {
+    /// Stable identifier.
+    pub id: String,
+    /// The verbatim tab label: `Display`, `Sources`, or `Other`.
+    pub label: String,
+    /// Whether this tab has settings to show.
+    pub available: bool,
+    /// What an unavailable tab says for itself, or `null` when available.
+    pub unavailable_note: Option<String>,
+}
+
+/// The whole `Display` tab, as the webview renders it.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayViewDto {
+    /// The three tabs, in the reference image's order.
+    pub tabs: Vec<PreferencesTabDto>,
+    /// The five radio groups, in the reference image's order.
+    pub groups: Vec<DisplayGroupDto>,
+    /// The checkbox's verbatim label.
+    pub expert_label: String,
+    /// Whether the checkbox is ticked.
+    pub expert_enabled: bool,
+    /// The three explanatory lines beneath it, verbatim and in order.
+    pub expert_notes: Vec<String>,
+    /// The same state as values, for the webview to echo back on a change.
+    pub settings: DisplaySettingsDto,
+}
+
+/// What a display change returns: the tab, and the table it re-rendered.
+///
+/// # Why both travel together
+///
+/// One change, one payload. Making the webview fetch the snapshot separately
+/// would leave an interval in which the settings had changed and the visible
+/// rows had not. Follows [`CatalogueChangeDto`], which pairs its two halves for
+/// the same reason.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayChangeDto {
+    /// The tab after the change.
+    pub view: DisplayViewDto,
+    /// Retained events, re-rendered under the new settings.
+    pub snapshot: SnapshotDto,
+}
+
+/// What the `Sources` tab of the preferences surface says for itself.
+///
+/// Not the monitor's existing Sources panel, which is a different surface and is
+/// untouched by this feature — hence the pointer to where that panel actually
+/// lives, so the message is useful rather than merely apologetic.
+const SOURCES_TAB_UNAVAILABLE: &str = "Source preferences are not available in this version. Choose which sources to monitor from the Sources section of the Monitor screen.";
+
+/// The whole `Other` tab, as the webview renders it.
+///
+/// # Why this is not [`DisplayViewDto`]
+///
+/// Three of that type's fields — `expert_label`, `expert_enabled`,
+/// `expert_notes` — describe a checkbox this tab does not have, and reusing it
+/// would mean inventing values for them. The two pieces worth sharing are
+/// [`DisplayGroupDto`] and [`DisplayOptionDto`], and those are shared verbatim:
+/// `RadioGroupRow` renders this tab with no change at all.
+///
+/// # Why the tab list is not repeated here
+///
+/// [`DisplayViewDto::tabs`] already states which tabs exist, and the preferences
+/// screen holds it for the strip regardless of which tab is showing. A second
+/// copy could disagree with the first, and whichever tab happened to be open
+/// would decide which copy won.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherViewDto {
+    /// The radio groups on this tab.
+    pub groups: Vec<DisplayGroupDto>,
+    /// The same state as values, for the webview to echo back on a change.
+    pub settings: AppearanceSettingsDto,
+}
+
+/// Builds the `Other` tab for the webview.
+///
+/// There is deliberately no `AppearanceChangeDto` beside [`DisplayChangeDto`]:
+/// that type exists only to carry a re-rendered snapshot, and a theme change
+/// re-renders nothing.
+#[must_use]
+pub fn other_view(appearance: AppearanceSettings) -> OtherViewDto {
+    OtherViewDto {
+        groups: vec![DisplayGroupDto {
+            id: "theme".to_owned(),
+            label: appearance_label::THEME.to_owned(),
+            second_line: None,
+            options: Theme::ALL
+                .into_iter()
+                .map(|option| DisplayOptionDto {
+                    id: wire_id(ThemeDto::from(option)),
+                    label: option.label().to_owned(),
+                    selected: option == appearance.theme,
+                })
+                .collect(),
+        }],
+        settings: appearance.into(),
+    }
+}
+
+/// Builds the `Display` tab for the webview.
+///
+/// # Why the labels come from here
+///
+/// `get_filter_model` set the precedent and stated the reason: the panel's
+/// entries and labels come from Rust so the interface cannot invent an option or
+/// reword a control. `screenshots/setting.jpg` is the design authority, and
+/// strings such as `Note (Middle C = C3)` and `1 – 128 (Standard)` — the latter
+/// carrying an en dash rather than a hyphen — are its normative content, not
+/// styling.
+#[must_use]
+pub fn display_view(settings: DisplaySettings) -> DisplayViewDto {
+    DisplayViewDto {
+        tabs: vec![
+            PreferencesTabDto {
+                id: "display".to_owned(),
+                label: "Display".to_owned(),
+                available: true,
+                unavailable_note: None,
+            },
+            PreferencesTabDto {
+                id: "sources".to_owned(),
+                label: "Sources".to_owned(),
+                available: false,
+                unavailable_note: Some(SOURCES_TAB_UNAVAILABLE.to_owned()),
+            },
+            PreferencesTabDto {
+                id: "other".to_owned(),
+                label: "Other".to_owned(),
+                available: true,
+                unavailable_note: None,
+            },
+        ],
+        groups: vec![
+            DisplayGroupDto {
+                id: "time".to_owned(),
+                label: group_label::TIME.to_owned(),
+                second_line: None,
+                options: TimeFormat::ALL
+                    .into_iter()
+                    .map(|option| DisplayOptionDto {
+                        id: wire_id(TimeFormatDto::from(option)),
+                        label: option.label().to_owned(),
+                        selected: option == settings.time,
+                    })
+                    .collect(),
+            },
+            DisplayGroupDto {
+                id: "note".to_owned(),
+                label: group_label::NOTE.to_owned(),
+                second_line: None,
+                options: NoteFormat::ALL
+                    .into_iter()
+                    .map(|option| DisplayOptionDto {
+                        id: wire_id(NoteFormatDto::from(option)),
+                        label: option.label().to_owned(),
+                        selected: option == settings.note,
+                    })
+                    .collect(),
+            },
+            DisplayGroupDto {
+                id: "controller".to_owned(),
+                label: group_label::CONTROLLER.to_owned(),
+                second_line: None,
+                options: ControllerFormat::ALL
+                    .into_iter()
+                    .map(|option| DisplayOptionDto {
+                        id: wire_id(ControllerFormatDto::from(option)),
+                        label: option.label().to_owned(),
+                        selected: option == settings.controller,
+                    })
+                    .collect(),
+            },
+            DisplayGroupDto {
+                id: "data".to_owned(),
+                label: group_label::DATA.to_owned(),
+                second_line: None,
+                options: DataFormat::ALL
+                    .into_iter()
+                    .map(|option| DisplayOptionDto {
+                        id: wire_id(DataFormatDto::from(option)),
+                        label: option.label().to_owned(),
+                        selected: option == settings.data,
+                    })
+                    .collect(),
+            },
+            DisplayGroupDto {
+                id: "program".to_owned(),
+                label: group_label::PROGRAM.to_owned(),
+                second_line: Some(group_label::PROGRAM_SECOND_LINE.to_owned()),
+                options: ProgramNumbering::ALL
+                    .into_iter()
+                    .map(|option| DisplayOptionDto {
+                        id: wire_id(ProgramNumberingDto::from(option)),
+                        label: option.label().to_owned(),
+                        selected: option == settings.program,
+                    })
+                    .collect(),
+            },
+        ],
+        expert_label: ExpertMode::LABEL.to_owned(),
+        expert_enabled: settings.expert.is_on(),
+        expert_notes: settings
+            .expert
+            .notes()
+            .iter()
+            .map(|note| (*note).to_owned())
+            .collect(),
+        settings: settings.into(),
+    }
+}
+
+/// The wire spelling of one settings union member.
+///
+/// # Why this goes through serialization rather than a hand-written table
+///
+/// The option ids the webview sends back must match the union members `specta`
+/// generates, and both come from the same `#[serde(rename_all)]` attribute. A
+/// second hand-maintained spelling beside it would be the parallel definition
+/// Principle IV forbids, and it would drift silently, because nothing compiles
+/// the two against each other.
+fn wire_id<T: Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_default()
 }

@@ -18,13 +18,15 @@ import type { SendViewDto } from "./bindings";
  *
  * # Why the screen choice lives here rather than in a route
  *
- * There are two screens and no addresses. A router would bring a dependency, a
+ * There are three screens and no addresses. A router would bring a dependency, a
  * history stack, and a URL scheme to answer a question a single value answers —
- * which is the ceremony the project's principles reject.
+ * which is the ceremony the project's principles reject. It stays in this file
+ * rather than moving to one of its own because moving it would touch every
+ * component that reads it, to no benefit the third screen created.
  */
 
-/** Which of the two screens is showing. */
-export type Screen = "monitor" | "send";
+/** Which of the three screens is showing. */
+export type Screen = "monitor" | "send" | "settings";
 
 /** What the send screen renders and remembers. */
 export interface SendState {
@@ -60,7 +62,7 @@ export interface SendState {
    */
   message: string | null;
 
-  /** Shows one of the two screens. */
+  /** Shows one of the three screens. */
   setScreen: (screen: Screen) => void;
   /** Replaces the model with what the core just returned. */
   applyView: (view: SendViewDto) => void;

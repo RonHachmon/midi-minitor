@@ -81,6 +81,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             commands::set_retention_limit,
             commands::clear_events,
             commands::set_column_visibility,
+            commands::get_display_model,
+            commands::set_display_settings,
+            commands::get_other_model,
+            commands::set_appearance_settings,
             commands::get_send_view,
             commands::subscribe_send_targets,
             commands::set_send_target,
@@ -154,7 +158,12 @@ pub fn run() {
                         return;
                     };
                     if let Some(visible) = monitor.ingest(event) {
-                        let dto = EventDto::from_event(&visible, monitor.catalogue());
+                        let dto = EventDto::from_event(
+                            &visible,
+                            monitor.catalogue(),
+                            monitor.display(),
+                            monitor.tick_rate(),
+                        );
                         // The lock is released before queuing so the pump's flush
                         // thread never waits on a MIDI callback.
                         drop(monitor);
@@ -202,7 +211,12 @@ pub fn run() {
             // Built before the monitor only because the monitor takes ownership of
             // the saved settings and this needs to borrow them first.
             let sender = Sender::new(source.targets(), saved.as_ref(), capabilities.clone());
-            let monitor = Monitor::new(catalogue, saved, status, capabilities);
+            // The host-clock rate is read once, here, and handed to the monitor
+            // for the life of the process. It is fixed on both platforms, so
+            // reading it per event or per render would be waste, and a renderer
+            // that asked the platform for it would be a domain rule doing I/O.
+            let tick_rate = clock.tick_rate();
+            let monitor = Monitor::new(catalogue, saved, status, capabilities, tick_rate);
 
             let pump = Arc::new(EventPump::new());
             pump.start();

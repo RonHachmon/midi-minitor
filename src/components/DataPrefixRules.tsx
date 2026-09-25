@@ -94,7 +94,7 @@ export function DataPrefixRules() {
             placeholder="e.g. 90"
             spellCheck={false}
             aria-invalid={refusal !== null}
-            className="w-[150px] rounded-[3px] border border-(--color-chrome-border) bg-white px-2 py-[2px] font-(family-name:--font-hex) text-[13px] outline-none transition-colors focus:border-(--color-accent) aria-[invalid=true]:border-(--color-danger)"
+            className="w-[150px] rounded-[3px] border border-(--color-chrome-border) bg-(--color-field) px-2 py-[2px] font-(family-name:--font-hex) text-[13px] outline-none transition-colors focus:border-(--color-accent) aria-[invalid=true]:border-(--color-danger)"
           />
         </label>
 

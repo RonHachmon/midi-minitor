@@ -511,7 +511,7 @@ impl EventSource for WindowsMidiSource {
         // sounding by the last thing sent.
         self.output = None;
 
-        let now = self.clock.now();
+        let now = self.clock.arrival();
         for (id, mut port) in self.ports.drain() {
             Self::close_port(&mut port);
             // An interrupted transfer is reported rather than stranded.
@@ -574,7 +574,7 @@ impl EventSource for WindowsMidiSource {
             .copied()
             .filter(|id| !selected.contains(id))
             .collect();
-        let now = self.clock.now();
+        let now = self.clock.arrival();
         for id in stale {
             if let Some(mut port) = self.ports.remove(&id) {
                 Self::close_port(&mut port);

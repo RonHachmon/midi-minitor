@@ -32,11 +32,28 @@ tauri-specta = { version = "2.0.0-rc.21", features = ["derive", "typescript"] }
 # adapter is never built. Without this, a Windows build would still compile the
 # CoreMIDI crate to an empty shell and a macOS build would still compile the
 # WinMM one, which is wasted work at best and a broken build at worst.
+#
+# `libc` and the `windows` performance counter are here, in the composition
+# root, because `SystemClock` is here. The Time column's three `Host time`
+# formats need a host-clock reading, and this crate already owns the one type
+# that answers "what time is it" for the whole application. The platform
+# adapters do not gain these dependencies: they reach the clock through
+# `midi_core::application::ports::Clock`, exactly as they always have.
+#
+# Principle II asks why neither is hand-rolled. `coremidi-sys` exposes the
+# CoreMIDI surface but no timebase function, so it cannot serve; `mach2` would
+# work but adds a crate for one call that `libc` — already in the tree —
+# declares. Writing the `mach` or `kernel32` signatures by hand is the
+# re-solving `midi-windows` already rejects for `MIDIHDR`, and for the same
+# reason: a mistyped field is a silent memory bug rather than a compile error.
+# See specs/006-display-preferences/research.md, decision D3.
 [target.'cfg(target_os = "macos")'.dependencies]
 midi-macos = { path = "../crates/midi-macos" }
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 midi-windows = { path = "../crates/midi-windows" }
+windows = { version = "0.62", features = ["Win32_System_Performance"] }
 
 [lints]
 workspace = true

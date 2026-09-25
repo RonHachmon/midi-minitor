@@ -3,7 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MIDI Monitor</title>
+    <title>MIDI minitor</title>
+    <script>
+      /*
+       * Paints the last-used theme before the stylesheet is parsed, so a user on
+       * Raver does not see one frame of the light window on every launch.
+       *
+       * The authority is the settings document in Rust, which arrives over IPC
+       * and overwrites this milliseconds later; this only reads the cache that
+       * `src/theme.ts` writes, and the key is spelt out there too — change both
+       * together. It must be inline and synchronous, because a module script
+       * runs after first paint, which is the whole problem being solved.
+       *
+       * Inline script is permitted because `tauri.conf.json` sets `csp: null`.
+       * Adding a CSP later means giving this a hash or a nonce.
+       */
+      try {
+        var theme = localStorage.getItem("midi-monitor.theme");
+        if (theme) document.documentElement.setAttribute("data-theme", theme);
+      } catch (error) {
+        /* Storage unavailable: one frame of the default palette, nothing worse. */
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

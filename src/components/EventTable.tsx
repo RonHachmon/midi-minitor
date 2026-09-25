@@ -1,12 +1,30 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ColumnDto, EventDto } from "../bindings";
 import { useMonitorStore } from "../store";
 import { ColumnMenu } from "./ColumnMenu";
+import { EventDetail } from "./EventDetail";
 
-/** Fixed width for each column, keyed by its wire identifier. */
+/**
+ * Width for each column, keyed by its wire identifier.
+ *
+ * # Why Time is the one column allowed to grow
+ *
+ * `108px` is what `screenshots/data.png` shows, and it is exactly enough for the
+ * `HH:MM:SS.mmm` that column held when the reference was captured. Display
+ * preferences can now put a host-clock reading there instead — thirteen digits
+ * for a tick count, more again for seconds carried to the nanosecond — and a
+ * fixed width truncated those to an ellipsis, which defeats the whole reason
+ * someone selects a host format.
+ *
+ * `minmax(108px, max-content)` keeps the depicted width in the depicted state:
+ * under `Clock time` every value is the same length and the column stays at
+ * 108px, so the reference image still matches. It grows only for a format the
+ * screenshots never depicted, which is the additive-surface rule working as
+ * intended rather than an exception to it.
+ */
 const COLUMN_WIDTH: Record<string, string> = {
-  time: "108px",
+  time: "minmax(108px, max-content)",
   source: "210px",
   message: "150px",
   chan: "52px",
@@ -101,6 +119,16 @@ export function EventTable() {
   const scroller = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
 
+  // The open row is held by id rather than as the event object, so the dialog
+  // re-reads the current rendering of that event. A display setting changed
+  // while it is open therefore updates it, instead of leaving a stale copy on
+  // screen; and an event dropped by the retention cap resolves to `undefined`,
+  // which closes the dialog rather than freezing a row that no longer exists.
+  const [openId, setOpenId] = useState<number | null>(null);
+  const opened = openId === null
+    ? null
+    : (events.find((candidate) => candidate.id === openId) ?? null);
+
   const virtualizer = useVirtualizer({
     count: events.length,
     getScrollElement: () => scroller.current,
@@ -133,6 +161,18 @@ export function EventTable() {
   const fidelityNote =
     byteFidelity.type === "assembled" ? byteFidelity.data.detail : null;
 
+  // The list is deliberately selectable so values can be copied out of it, and
+  // finishing a drag-selection produces a click. Opening the dialog on that
+  // click would make the two features fight, so a click that ends a selection
+  // is treated as part of the selection rather than as a row activation.
+  const openRow = (id: number) => {
+    const selection = window.getSelection();
+    if (selection !== null && selection.toString().length > 0) {
+      return;
+    }
+    setOpenId(id);
+  };
+
   const onScroll = () => {
     const element = scroller.current;
     if (!element) {
@@ -152,7 +192,10 @@ export function EventTable() {
         clickable. Overlaying it keeps the header's tracks aligned with the body
         rows, which is what matters for the columns to line up.
       */}
-      <div className="relative shrink-0 border-b border-(--color-hairline) bg-(--color-header)">
+      {/* `rule-ramp` lets a theme draw this divider as the brand gradient. It
+          resolves to nothing in the default theme, where the plain hairline
+          border below is what shows. */}
+      <div className="rule-ramp relative shrink-0 border-b border-(--color-hairline) bg-(--color-header)">
         <div
           className="grid items-center pr-6 text-[13px] text-(--color-ink-soft)"
           style={{ gridTemplateColumns: template }}
@@ -210,6 +253,20 @@ export function EventTable() {
                 <div
                   key={event.id}
                   title={event.rawHex}
+                  // A button rather than a row with a handler bolted on: this
+                  // opens a dialog, which is what a button does, and the role
+                  // is what tells a screen reader the list is explorable at all.
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openRow(event.id)}
+                  onKeyDown={(pressed) => {
+                    if (pressed.key === "Enter" || pressed.key === " ") {
+                      // Space scrolls the list by default, which would move the
+                      // row out from under the user as it opened.
+                      pressed.preventDefault();
+                      openRow(event.id);
+                    }
+                  }}
                   className="event-row absolute top-0 left-0 grid w-full items-center text-[13px] text-(--color-ink)"
                   style={{
                     height: `${item.size}px`,
@@ -231,6 +288,8 @@ export function EventTable() {
           </div>
         )}
       </div>
+
+      <EventDetail event={opened} onClose={() => setOpenId(null)} />
     </div>
   );
 }

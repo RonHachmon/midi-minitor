@@ -42,7 +42,10 @@ use std::sync::{Arc, Mutex};
 use midi_core::application::ports::{Clock, EventSink};
 use midi_core::domain::decoder::{expected_data_len, Decoded, MessageDecoder};
 use midi_core::domain::event::MidiEvent;
-use midi_core::domain::ids::{EventId, SourceId, Timestamp};
+// `Arrival` is aliased because this module already has an enum of that name for
+// a *delivery*. The domain type is a pair of clock readings for one instant;
+// keeping both spellings visible is clearer than renaming either.
+use midi_core::domain::ids::{Arrival as ArrivalTime, EventId, SourceId};
 use midi_core::domain::message::{InvalidReason, MidiMessage};
 use windows::Win32::Media::Audio::{HMIDIIN, MIDIHDR};
 use windows::Win32::Media::{MM_MIM_DATA, MM_MIM_ERROR, MM_MIM_LONGDATA, MM_MIM_LONGERROR};
@@ -62,7 +65,7 @@ pub enum Arrival {
         /// Which port it came from.
         source: SourceId,
         /// When it arrived, taken in the callback.
-        at: Timestamp,
+        at: ArrivalTime,
         /// The bytes exactly as Windows supplied them.
         bytes: Vec<u8>,
     },
@@ -71,7 +74,7 @@ pub enum Arrival {
         /// Which port it came from.
         source: SourceId,
         /// When it arrived, taken in the callback.
-        at: Timestamp,
+        at: ArrivalTime,
         /// Whatever bytes Windows made available.
         bytes: Vec<u8>,
         /// Whether the extent of the invalid data could be established.
@@ -157,7 +160,7 @@ pub unsafe extern "system" fn midi_in_proc(
 
     // The timestamp is taken here and nowhere else. Anything measured on the
     // worker would include however long this delivery waited in the queue.
-    let at = context.clock.now();
+    let at = context.clock.arrival();
 
     let arrival = match message {
         MM_MIM_DATA => Arrival::Decodable {
@@ -332,7 +335,7 @@ impl Worker {
     }
 
     /// Runs bytes through the domain decoder and publishes what it completed.
-    fn decode(&self, source: SourceId, at: Timestamp, bytes: &[u8]) {
+    fn decode(&self, source: SourceId, at: ArrivalTime, bytes: &[u8]) {
         let Ok(mut decoders) = self.decoders.lock() else {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return;
@@ -349,7 +352,7 @@ impl Worker {
     ///
     /// Called when a port closes, so an interrupted dump is *reported* rather
     /// than held forever waiting for an end that will not come.
-    pub fn abandon(&self, source: SourceId, at: Timestamp) {
+    pub fn abandon(&self, source: SourceId, at: ArrivalTime) {
         let Ok(mut decoders) = self.decoders.lock() else {
             return;
         };
@@ -366,7 +369,7 @@ impl Worker {
     ///
     /// Every outcome becomes a row, including the three that are not valid
     /// messages. That is the point of the decoder reporting them as values.
-    fn deliver(&self, source: SourceId, at: Timestamp, outcome: Decoded) {
+    fn deliver(&self, source: SourceId, at: ArrivalTime, outcome: Decoded) {
         let (message, raw) = match outcome {
             Decoded::Message { message, raw } => (message, raw),
             Decoded::Invalid { reason, raw } => (
@@ -388,7 +391,7 @@ impl Worker {
     }
 
     /// Numbers an event and hands it to the sink.
-    fn publish(&self, source: SourceId, at: Timestamp, message: MidiMessage, raw: Vec<u8>) {
+    fn publish(&self, source: SourceId, at: ArrivalTime, message: MidiMessage, raw: Vec<u8>) {
         let Ok(mut next) = self.next_event_id.lock() else {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return;

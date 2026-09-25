@@ -131,7 +131,7 @@ export function FilterPanel() {
                 data: Number(entry.target.value),
               })
             }
-            className="w-[44px] rounded-[3px] border border-(--color-chrome-border) bg-white px-1 py-[1px] text-[13px] disabled:bg-(--color-header) disabled:text-(--color-ink-faint)"
+            className="w-[44px] rounded-[3px] border border-(--color-chrome-border) bg-(--color-field) px-1 py-[1px] text-[13px] disabled:bg-(--color-header) disabled:text-(--color-ink-faint)"
           />
         </label>
       </fieldset>

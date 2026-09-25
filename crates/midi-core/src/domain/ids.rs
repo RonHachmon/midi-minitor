@@ -385,6 +385,158 @@ impl Timestamp {
     }
 }
 
+/// A reading of the host clock, in that platform's own units.
+///
+/// # Why raw ticks rather than nanoseconds
+///
+/// `Host time (integer)` means the platform's own counter — mach absolute time
+/// on macOS, the performance counter on Windows — because the reason to pick
+/// that format is to compare the monitor against another tool printing the same
+/// number. Normalising here would quietly redefine that option into a third
+/// spelling of `Host time (nanoseconds)`.
+///
+/// Keeping ticks and converting at render time also makes the three host formats
+/// consistent by construction: they are three readings of one stored value
+/// rather than three code paths that have to agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HostTicks(u64);
+
+impl HostTicks {
+    /// Wraps a reading taken from the platform's host clock.
+    #[must_use]
+    pub const fn new(ticks: u64) -> Self {
+        Self(ticks)
+    }
+
+    /// The reading.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// How many host-clock ticks pass in a second.
+///
+/// # Why this is held once rather than carried on every event
+///
+/// It is fixed for the life of the process on both platforms, so copying it onto
+/// every event would be one constant repeated a thousand times.
+/// [`crate::application::monitor::Monitor`] holds it and passes it to the
+/// renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TickRate(u64);
+
+impl TickRate {
+    /// One tick per nanosecond.
+    ///
+    /// # Why this exists
+    ///
+    /// It is the rate to assume when a platform will not report its own. A
+    /// reading then passes through the conversions unscaled, so
+    /// `Host time (integer)` stays truthful — it shows the counter exactly as it
+    /// was read — and the two derived formats are wrong in a way a user
+    /// comparing against another tool spots at once, which is better than being
+    /// subtly wrong by a guessed factor.
+    ///
+    /// Being a constant rather than a `new` call is what lets the clock return a
+    /// rate instead of a `Result`: the one failure [`Self::new`] has is zero,
+    /// and this is not zero.
+    pub const NANOSECOND: Self = Self(1_000_000_000);
+
+    /// Builds a rate from a platform reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::UnusableTickRate`] when the platform reports zero,
+    /// which would make every conversion below a division by zero. This is a
+    /// startup failure rather than a rendering one: the renderer receives a rate
+    /// already known good and therefore has no error case of its own, which is
+    /// what keeps `panic` out of a path that runs once per row.
+    pub const fn new(ticks_per_second: u64) -> Result<Self, CoreError> {
+        if ticks_per_second == 0 {
+            return Err(CoreError::UnusableTickRate);
+        }
+        Ok(Self(ticks_per_second))
+    }
+
+    /// Ticks per second.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Converts a host-clock reading to nanoseconds.
+    ///
+    /// # Why this computes in `u128`
+    ///
+    /// `ticks * 1_000_000_000` overflows `u64` for mach absolute time values
+    /// reached within an ordinary machine uptime. A wrapping multiply would
+    /// display a plausible wrong number, which is worse than an obviously wrong
+    /// one — and worse still here, because the whole reason to read host time is
+    /// to trust it to the nanosecond.
+    #[must_use]
+    pub fn to_nanoseconds(self, ticks: u64) -> u128 {
+        u128::from(ticks) * 1_000_000_000 / u128::from(self.0)
+    }
+}
+
+/// The host clock's account of when a message arrived.
+///
+/// # Why zero is a variant rather than a value
+///
+/// CoreMIDI documents a packet timestamp of zero as meaning "now" rather than
+/// meaning the origin of the clock. The monitor substitutes the moment it
+/// received the message — which is the third line beneath the `Expert mode`
+/// checkbox, `Zero timestamp shows time received`. Modelling that as a variant
+/// keeps both readings available, so ticking the checkbox can show the zero that
+/// actually arrived without the substituted value having been lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostTime {
+    /// The source stamped the message with a real host-clock reading.
+    Stamped(HostTicks),
+    /// The source sent zero, which means "now".
+    ///
+    /// Windows never produces this: the performance counter is read in the MIDI
+    /// callback and has no zero-means-now convention. That is an honest
+    /// asymmetry rather than a gap — the variant models a CoreMIDI rule, and
+    /// there is no Windows rule for it to model.
+    ZeroMeaningNow {
+        /// When the application actually took delivery.
+        received: HostTicks,
+    },
+}
+
+/// When a message arrived, on both clocks the Time column can show.
+///
+/// # Why both readings are one value
+///
+/// They must describe the same instant. Taking them through two separate calls
+/// would let a scheduler interleave between them, and the Time column would
+/// disagree with itself the moment the user switched format — which is exactly
+/// what choosing a host format is meant to investigate.
+///
+/// # Why both are captured whether or not they are shown
+///
+/// A format chosen later must be satisfiable by an event captured earlier. If
+/// the host reading were taken only while a host format was selected, every row
+/// retained before that moment would have a hole in it, and the user would have
+/// to reproduce the traffic they were already looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Arrival {
+    /// Wall-clock time, for `Clock time`.
+    pub wall: Timestamp,
+    /// The host clock, for the three `Host time` formats.
+    pub host: HostTime,
+}
+
+impl Arrival {
+    /// Pairs the two readings of one instant.
+    #[must_use]
+    pub const fn new(wall: Timestamp, host: HostTime) -> Self {
+        Self { wall, host }
+    }
+}
+
 /// A validated hexadecimal prefix to match against an event's raw bytes.
 ///
 /// # Why it stores a normalised nibble string

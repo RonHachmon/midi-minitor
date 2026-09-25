@@ -5,9 +5,12 @@
 //! delivered the bytes — which is what let the same rules carry over unchanged
 //! when real device input replaced generated traffic.
 
+pub mod appearance;
 pub mod column;
 pub mod composition;
+pub mod controller;
 pub mod decoder;
+pub mod display;
 pub mod encoder;
 pub mod event;
 pub mod event_log;
@@ -15,6 +18,7 @@ pub mod filter;
 pub mod ids;
 pub mod message;
 pub mod publication;
+pub mod rendering;
 pub mod request;
 pub mod send_record;
 pub mod sendable;

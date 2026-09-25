@@ -1,6 +1,6 @@
 //! One observed MIDI event.
 
-use super::ids::{ChannelNumber, EventId, SourceId, Timestamp};
+use super::ids::{Arrival, ChannelNumber, EventId, SourceId};
 use super::message::MidiMessage;
 
 /// A single message as observed from a source, at a moment in time.
@@ -27,8 +27,12 @@ pub struct MidiEvent {
     /// webview discard batches that were in flight when a settings change
     /// replaced the visible events.
     pub id: EventId,
-    /// When the event arrived, to the millisecond the Time column displays.
-    pub timestamp: Timestamp,
+    /// When the event arrived, on both clocks the Time column can show.
+    ///
+    /// Both readings are captured whether or not the format that needs them is
+    /// selected, because a format chosen later must be satisfiable by an event
+    /// captured earlier — see [`Arrival`].
+    pub arrival: Arrival,
     /// Which source produced it.
     pub source: SourceId,
     /// The interpretation — the authority for the Message, Chan, and Data columns.
@@ -42,14 +46,14 @@ impl MidiEvent {
     #[must_use]
     pub const fn new(
         id: EventId,
-        timestamp: Timestamp,
+        arrival: Arrival,
         source: SourceId,
         message: MidiMessage,
         raw: Vec<u8>,
     ) -> Self {
         Self {
             id,
-            timestamp,
+            arrival,
             source,
             message,
             raw,

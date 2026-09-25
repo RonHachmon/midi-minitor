@@ -1,15 +1,39 @@
 @import "tailwindcss";
 
 /*
- * Design tokens taken from the reference screenshots.
+ * JetBrains Mono, self-hosted, for the `Raver` theme's text.
+ *
+ * Bundled from npm rather than linked from a CDN because this is a desktop app:
+ * a Google Fonts `<link>` would leave the window in its fallback face whenever
+ * the machine is offline, and `tauri.conf.json` would have to keep a CSP hole
+ * open for fonts.gstatic.com forever. Vite fingerprints the woff2 files into
+ * the bundle, so the face ships with the binary and needs no network at all.
+ *
+ * The whole family is imported, not just the latin subset: every face carries a
+ * `unicode-range`, so a latin window still only ever loads the latin file, and
+ * a port named in Cyrillic or Greek — which a MIDI device is free to be —
+ * renders in the same typeface instead of silently falling back.
+ *
+ * The family name really is `JetBrains Mono Variable`; that is what Fontsource
+ * declares for the variable build, and it is what `--font-*` must name below.
+ */
+@import "@fontsource-variable/jetbrains-mono";
+
+/*
+ * The design tokens, and the contract they form.
  *
  * These live in one place because the screenshots are this project's design
  * authority: a value that appears inline in six components gets nudged six
  * times until the window no longer matches the image. Named here, each one is
- * checked against the reference once.
+ * checked against the reference once. That argument is now twice as strong,
+ * because this block is also the *complete list of colours a theme may change*.
+ * A component that reaches past it — a literal hex, a `bg-white`, a Tailwind
+ * palette class — is a surface one theme cannot repaint, and will be a light
+ * hole in a dark window.
  *
- * The palette is the macOS system light appearance the reference was captured
- * in — a warm off-white chrome above a pure-white list, with hairline dividers.
+ * The values below are the `Default` theme: the macOS system light appearance
+ * the reference was captured in, a warm off-white chrome above a pure-white
+ * list with hairline dividers. `Raver` refills the same names further down.
  */
 @theme {
   --color-chrome: #ece7e5;
@@ -31,6 +55,28 @@
   --color-control-hover: #f2eeec;
   --color-control-active: #e2dcd9;
 
+  /* The tint a hovered event row takes. Identical to `--color-header` here and
+     a separate name because a theme may want the hover to carry a hue the
+     header does not. */
+  --color-row-hover: #f6f3f2;
+
+  /* An input well, as distinct from a button face. Identical to `--color-control`
+     here and deliberately a separate name: on a dark theme a button should read
+     raised and lighter while a well reads inset and darker, so the two want
+     different values the moment there is more than one palette. */
+  --color-field: #ffffff;
+
+  /* Lifts and scrims. These are tokens rather than Tailwind's `shadow-md` and a
+     literal `rgb(0 0 0 / …)` because a shadow tuned for a light window is
+     invisible on a dark one. `--shadow-menu`'s value is Tailwind's own
+     `--shadow-md`, copied verbatim from node_modules/tailwindcss/theme.css so
+     the column menu does not move: v4 inlines that utility's value into the
+     class rather than emitting `var(--shadow-md)`, so overriding Tailwind's
+     token would silently do nothing. */
+  --shadow-menu: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-dialog: 0 12px 32px rgb(0 0 0 / 0.18);
+  --color-scrim: rgb(0 0 0 / 0.32);
+
   /* Row metrics: the reference list fits ~9 rows in ~215px. */
   --spacing-row: 24.5px;
 
@@ -38,6 +84,39 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-hex:
     "Cascadia Mono", "SF Mono", "Consolas", ui-monospace, monospace;
+}
+
+/*
+ * The decorative ramp, off by default.
+ *
+ * These are plain custom properties rather than `@theme` entries because no
+ * component ever writes them as a utility class — they are read only by the
+ * rules in this file, and `@theme` is for tokens that should generate
+ * utilities.
+ *
+ * `none` is doing real work. A theme that leaves these alone gets the plain
+ * border and the plain background beneath them, unchanged and to the pixel,
+ * which is what keeps `Default` answerable to the screenshots while `Raver`
+ * fills the same slots with the logo's gradient.
+ */
+:root {
+  /* Drawn over a border, via `border-image`. */
+  --rule-image: none;
+  /* Drawn over the pressed face of a selected control. */
+  --control-active-image: none;
+}
+
+/*
+ * A divider a theme may draw as a gradient.
+ *
+ * `border-image-source: none` leaves the element's own `border-color` showing,
+ * so this class costs nothing until a theme fills the variable in. The slice of
+ * `1` maps the image across the border box; edges with zero width draw nothing,
+ * so an element bordered only on one side gets the gradient only there.
+ */
+.rule-ramp {
+  border-image-source: var(--rule-image);
+  border-image-slice: 1;
 }
 
 /*
@@ -81,7 +160,25 @@
  */
 .chrome-button[aria-pressed="true"] {
   background: var(--color-control-active);
+  background-image: var(--control-active-image);
   border-color: var(--color-ink-faint);
+}
+
+/*
+ * The selected tab of a tab strip, such as `Display` in the preferences.
+ *
+ * A separate selector from the one above rather than a shared class, because
+ * the two states are not the same statement: `aria-pressed` says a toggle is
+ * engaged, `aria-selected` says which of several panels is showing, and a tab
+ * that used `aria-pressed` would be lying to a screen reader about what it is.
+ * They happen to look alike here, and that is a styling decision, not a reason
+ * to merge them.
+ */
+.chrome-button[aria-selected="true"] {
+  background: var(--color-control-active);
+  background-image: var(--control-active-image);
+  border-color: var(--color-ink-faint);
+  font-weight: 500;
 }
 
 /*
@@ -133,10 +230,87 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Rows open a detail dialog, so they advertise that they can be.
+ *
+ * Only the hover and focus states carry any of this. At rest the row is exactly
+ * what `screenshots/data.png` depicts — an additive feature is not allowed to
+ * change how a depicted surface looks sitting still, and a pointer cursor and a
+ * hover tint are states the reference never captured.
+ */
+.event-row {
+  cursor: pointer;
+}
+
+.event-row:hover {
+  background: var(--color-row-hover);
+}
+
+.event-row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/*
+ * The event detail dialog.
+ *
+ * The element ships with a centred position, a focus trap, Escape, and top-layer
+ * placement; what it does not ship with is this window's palette, so only the
+ * skin is set here. `padding: 0` lets the header and the byte pane meet the
+ * border, which is what makes the two panes read as one card.
+ */
+dialog.event-detail {
+  padding: 0;
+  /* Carries the ramp on all four edges where a theme supplies one; the plain
+     border colour below shows through when none is set. */
+  border-image-source: var(--rule-image);
+  border-image-slice: 1;
+  /* The UA stylesheet centres a modal dialog with `inset: 0; margin: auto`, and
+     Tailwind's preflight resets that margin to zero — which pins the dialog to
+     the top-left corner. Restoring it here is what puts it back in the middle. */
+  margin: auto;
+  border: 1px solid var(--color-chrome-border);
+  border-radius: 8px;
+  background: var(--color-chrome);
+  color: var(--color-ink);
+  box-shadow: var(--shadow-dialog);
+  max-width: min(680px, 92vw);
+}
+
+dialog.event-detail::backdrop {
+  background: var(--color-scrim);
+}
+
+/*
+ * A menu floating above the window — the column chooser.
+ *
+ * A plain class rather than Tailwind's `shadow-md`, for the reason
+ * `--shadow-menu` records: that utility inlines its value, so a theme cannot
+ * reach it. The other controls in this file are plain classes too, and this
+ * also sidesteps v4's `--tw-shadow-color` composition entirely.
+ */
+.menu-card {
+  box-shadow: var(--shadow-menu);
+}
+
 html,
 body,
 #root {
   height: 100%;
+}
+
+/*
+ * The native controls follow the palette, not the host.
+ *
+ * Declaring this is a fix rather than a no-op. With no `color-scheme` at all the
+ * UA default is `normal`, which means the checkboxes, radios, selects, number
+ * spinners, scrollbars and caret follow the *operating system* — so on a
+ * dark-mode host this window was already being lit from inside by controls the
+ * reference never showed. Stating `light` here is what makes `Default` match the
+ * screenshots on every machine rather than only on a light-mode one.
+ */
+:root {
+  color-scheme: light;
 }
 
 body {
@@ -152,8 +326,131 @@ body {
 }
 
 /*
- * The reference is a macOS window in the light appearance, and reproducing it
- * is the requirement. A dark repaint would be a different design, so the app
- * commits to this one and states the background explicitly rather than
- * inheriting the host's theme.
+ * The `Raver` theme.
+ *
+ * This block supersedes a comment that used to stand here saying a dark repaint
+ * would be a different design and the app committed to the light one. The half
+ * of that argument which still holds is the important half, and it is worth
+ * restating: reproducing the reference is the requirement, `Default` *is* that
+ * reproduction, it is what the screenshots are checked against, and it is what
+ * the app paints unless the user asks otherwise. What changed is only that the
+ * user may now ask. Neither theme is ever chosen by `prefers-color-scheme` —
+ * this window states its palette and does not inherit the host's.
+ *
+ * # Why an override block rather than a second stylesheet
+ *
+ * Every colour in this window is already referenced as `var(--color-…)`: the
+ * arbitrary-value syntax `bg-(--color-chrome)` compiles to a live var reference,
+ * not a resolved value. Re-declaring the tokens under a selector is therefore
+ * the entire mechanism — roughly a hundred and twenty references across the
+ * components repaint, none of them are edited, and none of them learn that a
+ * second theme exists.
+ *
+ * It must stay **unlayered**. Tailwind emits `@theme` into `@layer theme`, and
+ * unlayered rules beat every layer regardless of specificity, which is why the
+ * controls above are written this way too.
+ *
+ * # Why the attribute value is the wire id
+ *
+ * `raver` is what `ThemeDto` serialises to, so the webview writes the value it
+ * received straight onto the element with no translation table in between. A
+ * value this block does not recognise — a stale cache, a document written by a
+ * later version — simply fails to match and leaves `Default` standing, which is
+ * the same tolerance `forgiving` gives the stored document in Rust.
+ *
+ * # Where the colours come from
+ *
+ * `app-icon.svg`'s own gradient stops, all three of them. `--color-accent` is
+ * #ff2d95 and `--color-danger` is #ff5a5f, verbatim rather than approximations,
+ * and #ff8c1a carries the far end of `--rule-image` below — without which the
+ * orange third of the logo appeared nowhere in the window at all, because a
+ * one-slot accent has no room for a three-stop ramp.
+ *
+ * The ground is those hues at very
+ * low chroma — never pure black, which makes saturated neon halate against its
+ * own edges — and the neon is kept to accents, because a dense table read for
+ * long stretches cannot be saturated everywhere without fatiguing.
+ *
+ * Every text pair here clears WCAG AA against every ground it can sit on; the
+ * tightest is `--color-ink-faint` at 4.96:1. That token was lightened from the
+ * first draft specifically to clear it, because it carries real body text (the
+ * empty-state line, the byte-fidelity note) and not just hints.
+ *
+ * # The one honest compromise
+ *
+ * On a palette running pink through orange there is no hue left that reads as
+ * "error". `--color-danger` is therefore a neighbour of `--color-accent`, and a
+ * failure is distinguished by its tint block rather than by hue contrast. That
+ * is a real limitation of colouring from this icon, accepted deliberately.
  */
+:root[data-theme="raver"] {
+  --color-chrome: #1a0f1c;
+  --color-chrome-border: #3a1f33;
+  --color-list: #120a14;
+  --color-header: #241329;
+  --color-hairline: #3a2440;
+  --color-ink: #ffe9f3;
+  --color-ink-soft: #d3a2bd;
+  --color-ink-faint: #a985a0;
+  --color-accent: #ff2d95;
+  --color-danger: #ff5a5f;
+  --color-danger-tint: #3d1420;
+
+  --color-control: #2a1530;
+  --color-control-hover: #3a1f3f;
+  --color-control-active: #4f2b52;
+  --color-field: #0f0812;
+  /* Warmer than the header it matches in the default theme, so a hovered row
+     leans toward the orange end rather than repeating the accent. */
+  --color-row-hover: #2e1a2f;
+
+  --shadow-menu: 0 4px 10px -2px rgb(0 0 0 / 0.55);
+  --shadow-dialog: 0 12px 32px rgb(0 0 0 / 0.6);
+  --color-scrim: rgb(10 4 12 / 0.62);
+
+  /* The logo's three stops, in its own order, as an actual gradient.
+     This is where the full ramp lives: the accent tokens can only ever show one
+     colour each, so mapping pink to `--color-accent` and coral to
+     `--color-danger` left the orange with nowhere to appear at all. A divider
+     and a selected control are surfaces that carry a gradient without any text
+     having to sit on top of one. */
+  --rule-image: linear-gradient(90deg, #ff2d95 0%, #ff5a5f 50%, #ff8c1a 100%);
+  --control-active-image: linear-gradient(
+    90deg,
+    rgb(255 45 149 / 0.32) 0%,
+    rgb(255 90 95 / 0.28) 50%,
+    rgb(255 140 26 / 0.32) 100%
+  );
+
+  /* Without this the checkboxes, radios, selects, number spinners, scrollbars
+     and caret stay light, and the dark window is lit from inside by white
+     boxes. */
+  color-scheme: dark;
+
+  /* Set only here. In `Default` the reference shows macOS drawing its own accent
+     on the radios, and claiming that for the app's blue would be a fidelity
+     defect; here there is no reference to depart from. */
+  accent-color: var(--color-accent);
+
+  /*
+     The whole window in JetBrains Mono, chrome and event rows alike.
+
+     Both font tokens are refilled, not just `--font-hex`: leaving the UI on the
+     system sans would put two typefaces in a window whose entire point is one
+     look, and the hex column would stop reading as the same surface as the row
+     it sits in. The note above `.event-row` — that the rows are proportional
+     because the reference window is — is a `Default` fidelity argument, and
+     this theme has no reference to depart from, which is the same licence the
+     `accent-color` above takes. Tabular figures survive the switch anyway: a
+     monospace face is tabular by construction.
+
+     The system stacks stay on as fallback. `font-display: swap` means the first
+     frame after a cold start paints in them regardless, and a webview that
+     failed to load the woff2 entirely gets a readable window rather than a
+     last-resort face.
+  */
+  --font-ui:
+    "JetBrains Mono Variable", "JetBrains Mono", "Cascadia Mono", "SF Mono",
+    "Consolas", ui-monospace, monospace;
+  --font-hex: var(--font-ui);
+}

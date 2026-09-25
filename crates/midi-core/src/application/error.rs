@@ -349,4 +349,19 @@ pub enum CoreError {
     /// The caller reports it and refreshes the record list.
     #[error("that send is no longer in the record")]
     UnknownSendRecord,
+
+    /// The platform reported a host-clock rate of zero ticks per second.
+    ///
+    /// Produced once, at startup, when `mach_timebase_info` or
+    /// `QueryPerformanceFrequency` answers with a value that would make every
+    /// tick-to-nanosecond conversion a division by zero. It is raised here, at
+    /// construction, precisely so the renderer can take a rate that is already
+    /// known good and have no error case of its own — a fallible path that runs
+    /// once per table row is a path that will eventually reach for `unwrap`.
+    ///
+    /// The caller should report that host time is unavailable and leave the
+    /// monitor running on `Clock time`; nothing else about the application
+    /// depends on this reading.
+    #[error("the platform reported an unusable host clock rate")]
+    UnusableTickRate,
 }

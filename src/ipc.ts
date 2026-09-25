@@ -1,6 +1,8 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "./bindings";
 import type {
+  AppearanceSettingsDto,
+  DisplaySettingsDto,
   CatalogueDto,
   EventBatchDto,
   EventDto,
@@ -10,6 +12,8 @@ import type {
 } from "./bindings";
 import { useMonitorStore } from "./store";
 import { useSendStore } from "./sendStore";
+import { useSettingsStore } from "./settingsStore";
+import { applyTheme } from "./theme";
 
 /**
  * The webview's side of the IPC contract.
@@ -507,3 +511,91 @@ export const renameRequest = (from: string, to: string) =>
 /** Deletes one of the user's own requests. */
 export const deleteRequest = (name: string) =>
   mutateSend(commands.deleteRequest(name));
+
+/**
+ * Reads the `Display` tab, once, when the preferences screen mounts.
+ *
+ * Failures land beside the controls rather than in the window banner, matching
+ * the send screen: everything the user does here is attributable to a control
+ * they just touched.
+ */
+export async function loadDisplayView(): Promise<void> {
+  const result = await runReporting(commands.getDisplayModel());
+  const store = useSettingsStore.getState();
+  if (result.message !== null) {
+    store.setMessage(result.message);
+    return;
+  }
+  store.applyView(result.data);
+}
+
+/**
+ * Applies a display change, and re-renders the events the monitor already holds.
+ *
+ * # Why the snapshot is applied here rather than fetched separately
+ *
+ * The command returns the re-rendered table with the updated tab, so there is no
+ * interval in which the settings have changed and the visible rows have not. The
+ * monitor store's existing high-water mark then discards any stream batch at or
+ * below the snapshot, so a batch in flight when the setting changed cannot
+ * duplicate a row the snapshot already carries.
+ */
+export async function setDisplaySettings(
+  settings: DisplaySettingsDto,
+): Promise<void> {
+  const result = await runReporting(commands.setDisplaySettings(settings));
+  const store = useSettingsStore.getState();
+  if (result.message !== null) {
+    store.setMessage(result.message);
+    return;
+  }
+  store.applyView(result.data.view);
+  useMonitorStore.getState().applySnapshot(result.data.snapshot);
+}
+
+/**
+ * Reads the `Other` tab, and paints the window in the theme it reports.
+ *
+ * # Why the painting happens here rather than in the preferences screen
+ *
+ * The theme is a property of the window, not of the tab that chooses it. Calling
+ * this once at startup is what makes the monitor and the send screens honour it
+ * without either of them knowing that a preferences screen exists.
+ */
+export async function loadOtherView(): Promise<void> {
+  const result = await runReporting(commands.getOtherModel());
+  const store = useSettingsStore.getState();
+  if (result.message !== null) {
+    store.setMessage(result.message);
+    return;
+  }
+  store.applyOtherView(result.data);
+  applyTheme(result.data.settings.theme);
+}
+
+/**
+ * Applies an appearance change.
+ *
+ * # Why no snapshot is applied, unlike [`setDisplaySettings`]
+ *
+ * A theme changes no event's text. Every colour is a custom property the
+ * stylesheet resolves live, so the rows already on screen repaint the moment the
+ * attribute changes — there is nothing to re-render and no high-water mark to
+ * reconcile.
+ *
+ * The theme painted is the one the core answered with, never the one that was
+ * sent: the core decides what is selected, and this is the same discipline every
+ * other mutation here follows.
+ */
+export async function setAppearanceSettings(
+  settings: AppearanceSettingsDto,
+): Promise<void> {
+  const result = await runReporting(commands.setAppearanceSettings(settings));
+  const store = useSettingsStore.getState();
+  if (result.message !== null) {
+    store.setMessage(result.message);
+    return;
+  }
+  store.applyOtherView(result.data);
+  applyTheme(result.data.settings.theme);
+}

@@ -40,7 +40,7 @@ export function ColumnMenu() {
       </button>
       {open ? (
         <div
-          className="absolute top-full right-1 z-10 min-w-[140px] rounded border border-(--color-chrome-border) bg-(--color-chrome) p-1 shadow-md"
+          className="absolute top-full right-1 z-10 min-w-[140px] rounded border border-(--color-chrome-border) bg-(--color-chrome) p-1 menu-card"
           onMouseLeave={() => setOpen(false)}
         >
           {columns.map((column) => (

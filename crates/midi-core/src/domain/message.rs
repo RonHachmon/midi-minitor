@@ -1,4 +1,22 @@
-//! The MIDI message model: what a message is, what it is called, and how it renders.
+//! The MIDI message model: what a message is and what it is called.
+//!
+//! # Why rendering is no longer here
+//!
+//! This module used to own `data_display` and a private `note_name` as well.
+//! Both moved to [`super::rendering`] when display preferences gave them a
+//! settings parameter: modelling a message and choosing how to write it became
+//! two reasons to change, and Principle I does not allow one type to carry both.
+//! [`MidiMessage::display_name`] stays, because the Message column's name is a
+//! property of the message type rather than a formatting choice.
+//!
+//! One decision moved with them and is worth flagging here, where a reader of
+//! the old code would look for it. `note_name` fixed middle C at `C4`, citing
+//! `screenshots/data.png`. That reading is **superseded**:
+//! `screenshots/setting.jpg` offers both octave conventions and selects
+//! `Note (Middle C = C3)`, and the conflict between the two reference images was
+//! resolved in favour of the preferences image on 2026-09-23. The reasoning now
+//! lives on [`super::rendering`]'s `note_name`; do not restore the C4 default
+//! here as a bug fix.
 //!
 //! # Why this model is hand-written rather than taken from a MIDI crate
 //!
@@ -256,14 +274,6 @@ impl InvalidReason {
     }
 }
 
-/// The note names used when rendering a note number, sharps only.
-///
-/// The reference image shows `C2`; enharmonic spelling is not something MIDI
-/// carries, so a single naming convention is the only honest choice.
-const NOTE_NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
-
 /// One MIDI message, modelled as the monitor needs to see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiMessage {
@@ -457,61 +467,4 @@ impl MidiMessage {
             Self::Invalid { .. } => "Invalid",
         }
     }
-
-    /// The Data column's contents for this message.
-    ///
-    /// # Why rendering lives in the domain
-    ///
-    /// What belongs in the Data cell is a fact about MIDI, not a presentation
-    /// choice: a note shows its name and velocity, Channel Pressure shows a bare
-    /// amount, System Exclusive shows a byte count. Rendering it here keeps one
-    /// implementation; rendering it in the webview would put a MIDI rule on the
-    /// far side of a serialization boundary and duplicate it.
-    #[must_use]
-    pub fn data_display(&self) -> String {
-        match self {
-            Self::NoteOn { note, velocity, .. } | Self::NoteOff { note, velocity, .. } => {
-                format!("{} {}", note_name(*note), velocity.get())
-            }
-            Self::AftertouchPoly { note, pressure, .. } => {
-                format!("{} {}", note_name(*note), pressure.get())
-            }
-            Self::Control {
-                controller, value, ..
-            } => format!("{} {}", controller.get(), value.get()),
-            Self::Program { program, .. } => program.get().to_string(),
-            Self::ChannelPressure { pressure, .. } => pressure.get().to_string(),
-            Self::PitchWheel { value, .. } => value.get().to_string(),
-            Self::TimeCode { data } => data.get().to_string(),
-            Self::SongPositionPointer { position } => position.get().to_string(),
-            Self::SongSelect { song } => song.get().to_string(),
-            Self::TuneRequest
-            | Self::Clock
-            | Self::Start
-            | Self::Stop
-            | Self::Continue
-            | Self::ActiveSense
-            | Self::Reset => String::new(),
-            Self::SystemExclusive { payload } => {
-                // Framing bytes count toward what the user thinks of as the message.
-                let total = payload.len() + 2;
-                format!("{total} bytes")
-            }
-            Self::Invalid { reason, bytes } => {
-                format!("{} ({} bytes)", reason.label(), bytes.len())
-            }
-        }
-    }
-}
-
-/// Renders a note number as a name and octave, such as `C2`.
-///
-/// Octave numbering places middle C (note 60) at `C4`, which is the scientific
-/// convention and the one that makes note 36 read as `C2` — matching the
-/// reference window.
-fn note_name(note: DataByte) -> String {
-    let value = note.get();
-    let name = NOTE_NAMES[usize::from(value % 12)];
-    let octave = i16::from(value / 12) - 1;
-    format!("{name}{octave}")
 }
