@@ -243,15 +243,41 @@ impl ExpertMode {
     /// The checkbox's label, verbatim from the reference image.
     pub const LABEL: &'static str = "Expert mode";
 
-    /// The three lines beneath the checkbox, verbatim and in order.
-    ///
-    /// They describe what the monitor does while the box is **unticked**;
-    /// ticking it suppresses all three.
-    pub const NOTES: [&'static str; 3] = [
+    /// The three lines while the box is **unticked**, verbatim from
+    /// `screenshots/setting.jpg` and in its order.
+    const NOTES_OFF: [&'static str; 3] = [
         "Data formatted according to settings above",
         "Note On with velocity 0 shows as Note Off",
         "Zero timestamp shows time received",
     ];
+
+    /// The three lines while the box is **ticked**, verbatim from
+    /// `screenshots/expert-mode.png` and in its order.
+    const NOTES_ON: [&'static str; 3] = [
+        "Data formatted as raw hexadecimal",
+        "Note On with velocity 0 shows as Note On",
+        "Zero timestamp shows 0",
+    ];
+
+    /// The three lines beneath the checkbox, for the mode currently selected.
+    ///
+    /// # Why the lines change rather than being fixed
+    ///
+    /// `screenshots/setting.jpg` and `screenshots/expert-mode.png` capture the
+    /// same three lines with different text, so they are not a static caption
+    /// describing the checkbox — they are a readout of what the monitor is doing
+    /// right now. Each line states the behaviour currently in force, which is
+    /// why ticking the box rewrites all three rather than striking them out.
+    ///
+    /// The two arrays are parallel on purpose: line *n* of one is the opposite
+    /// of line *n* of the other, so the list never reorders under the reader.
+    #[must_use]
+    pub const fn notes(self) -> [&'static str; 3] {
+        match self {
+            Self::Off => Self::NOTES_OFF,
+            Self::On => Self::NOTES_ON,
+        }
+    }
 
     /// Whether the box is ticked.
     #[must_use]

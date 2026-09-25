@@ -27,10 +27,7 @@
 //! for one.
 
 use super::controller;
-use super::display::{
-    ControllerFormat, DataFormat, DisplaySettings, ExpertMode, NoteFormat, ProgramNumbering,
-    TimeFormat,
-};
+use super::display::{ControllerFormat, DisplaySettings, ExpertMode, NoteFormat, TimeFormat};
 use super::event::MidiEvent;
 use super::ids::{HostTime, TickRate};
 use super::message::MidiMessage;
@@ -67,37 +64,6 @@ const STATUS_NOTE_ON: u8 = 0x90;
 
 /// Mask isolating the kind nibble of a channel-voice status byte.
 const STATUS_MASK: u8 = 0xF0;
-
-/// The settings actually in force, once `Expert mode` has had its say.
-///
-/// # Why this exists rather than each renderer checking the mode
-///
-/// The first line beneath the checkbox is
-/// `Data formatted according to settings above`, describing what happens while
-/// the box is **unticked**. Ticking it therefore suppresses the five format
-/// settings and shows the values as they arrived: numbers rather than names,
-/// base ten, and programs counted from zero as the wire counts them.
-///
-/// Computing a substitute value rather than overwriting the stored one is what
-/// makes the checkbox reversible without loss. The user's five choices are never
-/// touched, so unticking restores them exactly and they never have to be
-/// re-chosen.
-///
-/// `time` is deliberately left alone: `Expert mode` changes how a *zero*
-/// timestamp is treated (see [`host_ticks`]), not which clock the column shows.
-fn in_force(settings: DisplaySettings) -> DisplaySettings {
-    match settings.expert {
-        ExpertMode::Off => settings,
-        ExpertMode::On => DisplaySettings {
-            time: settings.time,
-            note: NoteFormat::Decimal,
-            controller: ControllerFormat::Decimal,
-            data: DataFormat::Decimal,
-            program: ProgramNumbering::FromZero,
-            expert: ExpertMode::On,
-        },
-    }
-}
 
 /// The Time column's contents.
 ///
@@ -176,12 +142,41 @@ fn arrived_as_note_on(event: &MidiEvent) -> bool {
 ///
 /// Each value is governed by the one setting that names it: note numbers by
 /// [`NoteFormat`], controller numbers by [`ControllerFormat`], programs by
-/// [`ProgramNumbering`], and everything else by [`DataFormat`]. The velocity
+/// [`ProgramNumbering`](super::display::ProgramNumbering), and everything else
+/// by [`DataFormat`](super::display::DataFormat). The velocity
 /// beside a note is *everything else*, so changing the note format must not
 /// touch it.
+///
+/// # Why `Expert mode` abandons all of that
+///
+/// `screenshots/expert-mode.png` states the rule: `Data formatted as raw
+/// hexadecimal`. Not "in base sixteen" — *raw*. The cell stops being an
+/// interpretation of the message and becomes the bytes that arrived, which is
+/// the only reading under which the note, controller, program and data formats
+/// all have nothing left to govern.
+///
+/// This is the same string the row's tooltip carries, deliberately: someone who
+/// found the bytes by hovering should see the identical text when they tick the
+/// box, rather than having to satisfy themselves that two spellings of the same
+/// bytes agree.
+///
+/// A `System Exclusive` transfer shows its bytes here too, where the decoded
+/// form shows a size. That is the point of the mode, and the payload is bounded
+/// by [`crate::constants::MAX_SYSEX_BYTES`], so the cell cannot grow without
+/// limit — it will simply be wider than the column and truncate.
 #[must_use]
 pub fn data_display(event: &MidiEvent, settings: DisplaySettings) -> String {
-    let settings = in_force(settings);
+    match settings.expert {
+        ExpertMode::On => event.raw_hex(),
+        ExpertMode::Off => decoded_display(event, settings),
+    }
+}
+
+/// The Data column's contents as an interpretation of the message.
+///
+/// Split from [`data_display`] so the raw path above stays one line and this
+/// keeps the exhaustive match the module header promises.
+fn decoded_display(event: &MidiEvent, settings: DisplaySettings) -> String {
     let data = settings.data;
     match &event.message {
         MidiMessage::NoteOn { note, velocity, .. }
@@ -232,8 +227,8 @@ pub fn data_display(event: &MidiEvent, settings: DisplaySettings) -> String {
 
 /// Renders one note number per the chosen format.
 ///
-/// Expects settings already put [`in_force`]; [`data_display`] does that for its
-/// own callers.
+/// Reached only while `Expert mode` is off, since the mode replaces the whole
+/// cell rather than reformatting the values inside it.
 #[must_use]
 pub fn note_display(note: u8, settings: DisplaySettings) -> String {
     match settings.note {
@@ -275,8 +270,8 @@ fn note_name(note: u8, octave_offset: i16) -> String {
 /// number: the name is an addition to the number, never a replacement that
 /// leaves the cell blank.
 ///
-/// Expects settings already put [`in_force`]; [`data_display`] does that for its
-/// own callers.
+/// Reached only while `Expert mode` is off, since the mode replaces the whole
+/// cell rather than reformatting the values inside it.
 #[must_use]
 pub fn controller_display(number: u8, settings: DisplaySettings) -> String {
     match settings.controller {

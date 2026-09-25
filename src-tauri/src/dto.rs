@@ -1428,7 +1428,9 @@ pub fn display_view(settings: DisplaySettings) -> DisplayViewDto {
         ],
         expert_label: ExpertMode::LABEL.to_owned(),
         expert_enabled: settings.expert.is_on(),
-        expert_notes: ExpertMode::NOTES
+        expert_notes: settings
+            .expert
+            .notes()
             .iter()
             .map(|note| (*note).to_owned())
             .collect(),

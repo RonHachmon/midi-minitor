@@ -316,11 +316,25 @@ can be operated.
   - `Expert mode` — a checkbox.
 - **FR-009**: Each radio group MUST behave as a radio group: exactly one option selected at all
   times, and selecting one deselects the others.
-- **FR-010**: Beneath the `Expert mode` checkbox the surface MUST show the three explanatory
-  lines from the reference image verbatim, as a bulleted list, indented beneath the checkbox:
+- **FR-010**: Beneath the `Expert mode` checkbox the surface MUST show three explanatory lines
+  verbatim, as a bulleted list, indented beneath the checkbox. The lines describe the behaviour
+  currently in force, so they MUST change with the checkbox rather than being fixed. While it is
+  unticked, `screenshots/setting.jpg` is the authority:
   `Data formatted according to settings above`,
   `Note On with velocity 0 shows as Note Off`,
   `Zero timestamp shows time received`.
+- **FR-010a**: While `Expert mode` is ticked, `screenshots/expert-mode.png` is the authority for
+  the same three lines, in the same order:
+  `Data formatted as raw hexadecimal`,
+  `Note On with velocity 0 shows as Note On`,
+  `Zero timestamp shows 0`.
+  Line *n* of one set is the opposite of line *n* of the other, so the list MUST NOT reorder as
+  the checkbox changes.
+- **FR-010b**: `Data formatted as raw hexadecimal` MUST be read as *raw*, not merely as base
+  sixteen: while `Expert mode` is ticked the `Data` cell MUST show the bytes as received, as one
+  uppercase separator-free hexadecimal string, identical to the value the row's tooltip carries.
+  This supersedes any reading of FR-022 under which the five format settings still apply to the
+  cell in expert mode — in that mode they have nothing left to govern.
 - **FR-011**: The first-launch defaults MUST be the states the reference image depicts:
   `Clock time`, `Note (Middle C = C3)`, `Standard name`, `Decimal number`,
   `1 – 128 (Standard)`, and `Expert mode` unticked.
