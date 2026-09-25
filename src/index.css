@@ -149,6 +149,53 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Rows open a detail dialog, so they advertise that they can be.
+ *
+ * Only the hover and focus states carry any of this. At rest the row is exactly
+ * what `screenshots/data.png` depicts — an additive feature is not allowed to
+ * change how a depicted surface looks sitting still, and a pointer cursor and a
+ * hover tint are states the reference never captured.
+ */
+.event-row {
+  cursor: pointer;
+}
+
+.event-row:hover {
+  background: var(--color-header);
+}
+
+.event-row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/*
+ * The event detail dialog.
+ *
+ * The element ships with a centred position, a focus trap, Escape, and top-layer
+ * placement; what it does not ship with is this window's palette, so only the
+ * skin is set here. `padding: 0` lets the header and the byte pane meet the
+ * border, which is what makes the two panes read as one card.
+ */
+dialog.event-detail {
+  padding: 0;
+  /* The UA stylesheet centres a modal dialog with `inset: 0; margin: auto`, and
+     Tailwind's preflight resets that margin to zero — which pins the dialog to
+     the top-left corner. Restoring it here is what puts it back in the middle. */
+  margin: auto;
+  border: 1px solid var(--color-chrome-border);
+  border-radius: 8px;
+  background: var(--color-chrome);
+  color: var(--color-ink);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+  max-width: min(680px, 92vw);
+}
+
+dialog.event-detail::backdrop {
+  background: rgb(0 0 0 / 0.32);
+}
+
 html,
 body,
 #root {

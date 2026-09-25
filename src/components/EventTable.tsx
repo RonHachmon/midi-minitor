@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ColumnDto, EventDto } from "../bindings";
 import { useMonitorStore } from "../store";
 import { ColumnMenu } from "./ColumnMenu";
+import { EventDetail } from "./EventDetail";
 
 /**
  * Width for each column, keyed by its wire identifier.
@@ -118,6 +119,16 @@ export function EventTable() {
   const scroller = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
 
+  // The open row is held by id rather than as the event object, so the dialog
+  // re-reads the current rendering of that event. A display setting changed
+  // while it is open therefore updates it, instead of leaving a stale copy on
+  // screen; and an event dropped by the retention cap resolves to `undefined`,
+  // which closes the dialog rather than freezing a row that no longer exists.
+  const [openId, setOpenId] = useState<number | null>(null);
+  const opened = openId === null
+    ? null
+    : (events.find((candidate) => candidate.id === openId) ?? null);
+
   const virtualizer = useVirtualizer({
     count: events.length,
     getScrollElement: () => scroller.current,
@@ -149,6 +160,18 @@ export function EventTable() {
   const dataVisible = visible.some((column) => column.id === "data");
   const fidelityNote =
     byteFidelity.type === "assembled" ? byteFidelity.data.detail : null;
+
+  // The list is deliberately selectable so values can be copied out of it, and
+  // finishing a drag-selection produces a click. Opening the dialog on that
+  // click would make the two features fight, so a click that ends a selection
+  // is treated as part of the selection rather than as a row activation.
+  const openRow = (id: number) => {
+    const selection = window.getSelection();
+    if (selection !== null && selection.toString().length > 0) {
+      return;
+    }
+    setOpenId(id);
+  };
 
   const onScroll = () => {
     const element = scroller.current;
@@ -227,6 +250,20 @@ export function EventTable() {
                 <div
                   key={event.id}
                   title={event.rawHex}
+                  // A button rather than a row with a handler bolted on: this
+                  // opens a dialog, which is what a button does, and the role
+                  // is what tells a screen reader the list is explorable at all.
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openRow(event.id)}
+                  onKeyDown={(pressed) => {
+                    if (pressed.key === "Enter" || pressed.key === " ") {
+                      // Space scrolls the list by default, which would move the
+                      // row out from under the user as it opened.
+                      pressed.preventDefault();
+                      openRow(event.id);
+                    }
+                  }}
                   className="event-row absolute top-0 left-0 grid w-full items-center text-[13px] text-(--color-ink)"
                   style={{
                     height: `${item.size}px`,
@@ -248,6 +285,8 @@ export function EventTable() {
           </div>
         )}
       </div>
+
+      <EventDetail event={opened} onClose={() => setOpenId(null)} />
     </div>
   );
 }
