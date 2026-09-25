@@ -1,6 +1,25 @@
 @import "tailwindcss";
 
 /*
+ * JetBrains Mono, self-hosted, for the `Raver` theme's text.
+ *
+ * Bundled from npm rather than linked from a CDN because this is a desktop app:
+ * a Google Fonts `<link>` would leave the window in its fallback face whenever
+ * the machine is offline, and `tauri.conf.json` would have to keep a CSP hole
+ * open for fonts.gstatic.com forever. Vite fingerprints the woff2 files into
+ * the bundle, so the face ships with the binary and needs no network at all.
+ *
+ * The whole family is imported, not just the latin subset: every face carries a
+ * `unicode-range`, so a latin window still only ever loads the latin file, and
+ * a port named in Cyrillic or Greek — which a MIDI device is free to be —
+ * renders in the same typeface instead of silently falling back.
+ *
+ * The family name really is `JetBrains Mono Variable`; that is what Fontsource
+ * declares for the variable build, and it is what `--font-*` must name below.
+ */
+@import "@fontsource-variable/jetbrains-mono";
+
+/*
  * The design tokens, and the contract they form.
  *
  * These live in one place because the screenshots are this project's design
@@ -412,4 +431,26 @@ body {
      on the radios, and claiming that for the app's blue would be a fidelity
      defect; here there is no reference to depart from. */
   accent-color: var(--color-accent);
+
+  /*
+     The whole window in JetBrains Mono, chrome and event rows alike.
+
+     Both font tokens are refilled, not just `--font-hex`: leaving the UI on the
+     system sans would put two typefaces in a window whose entire point is one
+     look, and the hex column would stop reading as the same surface as the row
+     it sits in. The note above `.event-row` — that the rows are proportional
+     because the reference window is — is a `Default` fidelity argument, and
+     this theme has no reference to depart from, which is the same licence the
+     `accent-color` above takes. Tabular figures survive the switch anyway: a
+     monospace face is tabular by construction.
+
+     The system stacks stay on as fallback. `font-display: swap` means the first
+     frame after a cold start paints in them regardless, and a webview that
+     failed to load the woff2 entirely gets a readable window rather than a
+     last-resort face.
+  */
+  --font-ui:
+    "JetBrains Mono Variable", "JetBrains Mono", "Cascadia Mono", "SF Mono",
+    "Consolas", ui-monospace, monospace;
+  --font-hex: var(--font-ui);
 }
